@@ -1,0 +1,33 @@
+﻿src/ai/flows/remove-object.ts(70,30): error TS2769: No overload matches this call.
+  Overload 1 of 3, '(strPrompt: string): Promise<GenerateResponse<any>>', gave the following error.
+    Argument of type '{ model: string; prompt: { photoDataUri: string; maskDataUri: string; }; config: { responseModalities: string[]; }; }' is not assignable to parameter of type 'string'.
+  Overload 2 of 3, '(parts: ({ text: string; custom?: Record<string, unknown> | undefined; media?: undefined; toolRequest?: undefined; toolResponse?: undefined; data?: unknown; metadata?: Record<string, unknown> | undefined; reasoning?: undefined; resource?: undefined; } | ... 6 more ... | { ...; })[]): Promise<...>', gave the following error.
+    Object literal may only specify known properties, and 'model' does not exist in type '({ text: string; custom?: Record<string, unknown> | undefined; media?: undefined; toolRequest?: undefined; toolResponse?: undefined; data?: unknown; metadata?: Record<string, unknown> | undefined; reasoning?: undefined; resource?: undefined; } | ... 6 more ... | { ...; })[]'.
+  Overload 3 of 3, '(opts: GenerateOptions<ZodTypeAny, ZodObject<{ version: ZodOptional<ZodString>; temperature: ZodOptional<ZodNumber>; maxOutputTokens: ZodOptional<...>; topK: ZodOptional<...>; topP: ZodOptional<...>; stopSequences: ZodOptional<...>; }, "passthrough", ZodTypeAny, objectOutputType<...>, objectInputType<...>>> | PromiseLike<...>): Promise<...>', gave the following error.
+    Type '{ photoDataUri: string; maskDataUri: string; }' is not assignable to type 'string | { text: string; custom?: Record<string, unknown> | undefined; media?: undefined; toolRequest?: undefined; toolResponse?: undefined; data?: unknown; metadata?: Record<string, unknown> | undefined; reasoning?: undefined; resource?: undefined; } | ... 8 more ... | undefined'.
+src/components/canvas-sync/editor-header.tsx(248,12): error TS2739: Type '{}' is missing the following properties from type '{ src: string | StaticImport; alt: string; width?: number | `${number}` | undefined; height?: number | `${number}` | undefined; fill?: boolean | undefined; loader?: ImageLoader | undefined; ... 12 more ...; lazyRoot?: string | undefined; }': src, alt
+src/components/canvas-sync/language-dialog.tsx(30,52): error TS2339: Property 'locale' does not exist on type '(key: string) => string'.
+src/components/canvas-sync/logo.tsx(10,13): error TS2783: 'src' is specified more than once, so this usage will be overwritten.
+src/components/canvas-sync/logo.tsx(11,13): error TS2783: 'alt' is specified more than once, so this usage will be overwritten.
+src/components/canvas-sync/main-editor.tsx(321,13): error TS2322: Type '{ pastedImage: { imageDataUri: string; x: number; y: number; }[]; id: number; name: string; visible: boolean; opacity: number; locked: boolean; lockedAlpha: boolean; clippingMask: boolean; type: "layer" | "group"; layers?: Layer[]; parentId?: number | null; expanded?: boolean; }' is not assignable to type 'LayerSerialized'.
+  Type '{ pastedImage: { imageDataUri: string; x: number; y: number; }[]; id: number; name: string; visible: boolean; opacity: number; locked: boolean; lockedAlpha: boolean; clippingMask: boolean; type: "layer" | "group"; layers?: Layer[]; parentId?: number | null; expanded?: boolean; }' is not assignable to type '{ pastedImage: PastedImageSerialized[]; layers?: LayerSerialized[] | undefined; }'.
+    Types of property 'layers' are incompatible.
+      Type 'Layer[] | undefined' is not assignable to type 'LayerSerialized[] | undefined'.
+        Type 'Layer[]' is not assignable to type 'LayerSerialized[]'.
+          Type 'Layer' is not assignable to type 'LayerSerialized'.
+            Type 'Layer' is not assignable to type '{ pastedImage: PastedImageSerialized[]; layers?: LayerSerialized[] | undefined; }'.
+              Types of property 'pastedImage' are incompatible.
+                Type '{ imageData: HTMLCanvasElement; x: number; y: number; }[]' is not assignable to type 'PastedImageSerialized[]'.
+                  Property 'imageDataUri' is missing in type '{ imageData: HTMLCanvasElement; x: number; y: number; }' but required in type 'PastedImageSerialized'.
+src/components/canvas-sync/quick-access-toolbar.tsx(248,85): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/components/canvas-sync/quick-access-toolbar.tsx(248,85): error TS2345: Argument of type '(s: any) => number' is not assignable to parameter of type 'number'.
+src/components/canvas-sync/quick-access-toolbar.tsx(253,85): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/components/canvas-sync/quick-access-toolbar.tsx(253,85): error TS2345: Argument of type '(s: any) => number' is not assignable to parameter of type 'number'.
+src/components/canvas-sync/quick-access-toolbar.tsx(256,88): error TS7006: Parameter 'o' implicitly has an 'any' type.
+src/components/canvas-sync/quick-access-toolbar.tsx(256,88): error TS2345: Argument of type '(o: any) => number' is not assignable to parameter of type 'number'.
+src/components/canvas-sync/quick-access-toolbar.tsx(261,88): error TS7006: Parameter 'o' implicitly has an 'any' type.
+src/components/canvas-sync/quick-access-toolbar.tsx(261,88): error TS2345: Argument of type '(o: any) => number' is not assignable to parameter of type 'number'.
+src/components/canvas-sync/unit-resolution-dialog.tsx(71,75): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/canvas-sync/unit-resolution-dialog.tsx(71,75): error TS2345: Argument of type '(p: any) => number' is not assignable to parameter of type 'number'.
+src/components/canvas-sync/unit-resolution-dialog.tsx(73,75): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/canvas-sync/unit-resolution-dialog.tsx(73,75): error TS2345: Argument of type '(p: any) => any' is not assignable to parameter of type 'number'.
