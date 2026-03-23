@@ -1,7 +1,7 @@
 
 import { createContext, useContext } from 'react';
 
-export type Locale = 'en' | 'es';
+export type Locale = 'en' | 'ja' | 'hi' | 'de' | 'ko' | 'zh' | 'ru' | 'sv' | 'pl' | 'fr' | 'it';
 
 export const I18nContext = createContext<{ locale: Locale, t: (key: string) => string }>({
     locale: 'en',

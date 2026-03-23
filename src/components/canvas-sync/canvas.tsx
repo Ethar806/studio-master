@@ -23,6 +23,8 @@ export interface Path {
   layerId: number;
   shape?: 'rectangle';
   opacity?: number;
+  clipRect?: { x: number, y: number, width: number, height: number } | null;
+  isSelectionInverted?: boolean;
 }
 
 interface CanvasTransform {
@@ -35,6 +37,7 @@ interface CanvasTransform {
 
 export interface CanvasRef {
     getSelectionImageData: () => ImageData | null;
+    getLayerRaster: (layerId: number) => { imageData: HTMLCanvasElement; x: number; y: number } | null;
     clearSelection: () => void;
     fillSelection: (color: string) => void;
     drawPastedImage: (image: HTMLCanvasElement, x: number, y: number) => void;
@@ -46,8 +49,6 @@ interface CanvasProps {
   setActiveTool: (tool: Tool) => void;
   paths: Path[];
   setPaths: Dispatch<SetStateAction<Path[]>>;
-  undonePaths: Path[];
-  setUndonePaths: Dispatch<SetStateAction<Path[]>>;
   brushSize: number;
   brushColor: string;
   setBrushColor: (color: string) => void;
@@ -67,12 +68,39 @@ interface CanvasProps {
   onPaste: (imageData: HTMLCanvasElement) => void;
   onSelectCanvasFrame: () => void;
   isSelectionInverted: boolean;
+  activeChannel: 'all' | 'red' | 'green' | 'blue' | 'alpha';
   canvasFrame: CanvasFrame | null;
   canvasBackgroundColor: string;
   unit: Unit;
   ppi: number;
   pressureCurve: { x: number, y: number }[];
   forceProportions: boolean;
+  onCommitTransformRaster?: (composite: HTMLCanvasElement, x: number, y: number, capturedLayerIds: number[], sel: { x: number; y: number; width: number; height: number } | null) => void;
+  fillTolerance: number;
+  fillContiguous: boolean;
+  onPaintBucketFill: (imageData: HTMLCanvasElement, x: number, y: number) => void;
+  onCommitCrop: (cropRect: {x: number, y: number, width: number, height: number}) => void;
+  isSimulatingPressure: boolean;
+}
+
+export interface TransformSession {
+  isActive: boolean;
+  action: 'idle' | 'scale' | 'rotate' | 'move';
+  grabHandle: 'tl'|'tr'|'bl'|'br'|'t'|'b'|'l'|'r' | 'rot' | 'center' | null;
+  startMouse: Point;
+  initialRect: { x: number, y: number, width: number, height: number };
+  currentRect: { x: number, y: number, width: number, height: number };
+  rotation: number;
+  initialRotation: number;
+}
+
+export interface CropSession {
+  isActive: boolean;
+  action: 'idle' | 'create' | 'resize' | 'move';
+  grabHandle: 'tl'|'tr'|'bl'|'br'|'t'|'b'|'l'|'r' | 'center' | null;
+  startMouse: Point;
+  initialRect: { x: number, y: number, width: number, height: number };
+  currentRect: { x: number, y: number, width: number, height: number };
 }
 
 const RULER_BACKGROUND = '#ADFF2F';
@@ -122,8 +150,6 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
   setActiveTool,
   paths,
   setPaths,
-  undonePaths,
-  setUndonePaths,
   brushSize,
   brushColor,
   setBrushColor,
@@ -143,12 +169,19 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
   onPaste,
   onSelectCanvasFrame,
   isSelectionInverted,
+  activeChannel,
   canvasFrame,
   canvasBackgroundColor,
   unit,
   ppi,
   pressureCurve,
   forceProportions,
+  onCommitTransformRaster,
+  fillTolerance,
+  fillContiguous,
+  onPaintBucketFill,
+  onCommitCrop,
+  isSimulatingPressure,
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -160,6 +193,16 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
   const [isSpacebarDown, setIsSpacebarDown] = useState(false);
   const originalToolRef = useRef<Tool>(activeTool);
 
+  const [moveSession, setMoveSession] = useState<{ startX: number; startY: number; dx: number; dy: number } | null>(null);
+  const [movingSelection, setMovingSelection] = useState<{ startX: number; startY: number; initialSelX: number; initialSelY: number } | null>(null);
+
+  // draftSelection: only visible while the user is actively dragging to create a new selection
+  const [draftSelection, setDraftSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+
+  // Rasterized snapshot used during transform operations
+  const transformRasterRef = useRef<HTMLCanvasElement | null>(null);
+  const transformRasterOriginRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const transformCapturedLayerIdsRef = useRef<number[]>([]);
 
   const [isSelecting, setIsSelecting] = useState(false);
   const [startPoint, setStartPoint] = useState<Point | null>(null);
@@ -173,6 +216,133 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
   // Cursor preview state
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isHovering, setIsHovering] = useState(false);
+
+  const [transformSession, setTransformSession] = useState<TransformSession | null>(null);
+  const [cropSession, setCropSession] = useState<CropSession | null>(null);
+
+  const getTransformMatrix = useCallback((session: TransformSession) => {
+      const { initialRect, currentRect, rotation } = session;
+      const matrix = new DOMMatrix();
+      if (initialRect.width === 0 || initialRect.height === 0) return matrix;
+
+      const cx = currentRect.x + currentRect.width / 2;
+      const cy = currentRect.y + currentRect.height / 2;
+      matrix.translateSelf(cx, cy);
+      matrix.rotateSelf(rotation * 180 / Math.PI);
+      matrix.scaleSelf(currentRect.width / initialRect.width, currentRect.height / initialRect.height);
+      const icx = initialRect.x + initialRect.width / 2;
+      const icy = initialRect.y + initialRect.height / 2;
+      matrix.translateSelf(-icx, -icy);
+      return matrix;
+  }, []);
+
+  useEffect(() => {
+     if (activeTool === 'transform' && !transformSession) {
+         // --- Determine bounding region to capture ---
+         let bounds: { x: number, y: number, width: number, height: number } | null = null;
+         
+         if (selection) { 
+             bounds = { ...selection }; 
+         } else {
+            // Compute bounds across ALL visible layers
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            const collectBounds = (layerList: Layer[]) => {
+                for (const layer of layerList) {
+                    if (!layer.visible) continue;
+                    paths.filter(p => p.layerId === layer.id).forEach(p => {
+                        p.points.forEach(pt => {
+                            minX = Math.min(minX, pt.x - p.strokeWidth / 2);
+                            minY = Math.min(minY, pt.y - p.strokeWidth / 2);
+                            maxX = Math.max(maxX, pt.x + p.strokeWidth / 2);
+                            maxY = Math.max(maxY, pt.y + p.strokeWidth / 2);
+                        });
+                    });
+                    layer.pastedImage?.forEach(img => {
+                        const w = img.width ?? img.imageData.width;
+                        const h = img.height ?? img.imageData.height;
+                        minX = Math.min(minX, img.x); minY = Math.min(minY, img.y);
+                        maxX = Math.max(maxX, img.x + w); maxY = Math.max(maxY, img.y + h);
+                    });
+                    if (layer.type === 'group' && layer.layers) collectBounds(layer.layers);
+                }
+            };
+            collectBounds(layers);
+            if (minX !== Infinity) {
+                const PAD = 4;
+                bounds = { x: minX - PAD, y: minY - PAD, width: (maxX - minX) + PAD * 2, height: (maxY - minY) + PAD * 2 };
+            }
+         }
+         
+         if (bounds) {
+             // --- Rasterize all visible layers into a temp canvas at world coords ---
+             const bx = Math.floor(bounds.x);
+             const by = Math.floor(bounds.y);
+             const bw = Math.ceil(bounds.width);
+             const bh = Math.ceil(bounds.height);
+
+             const raster = document.createElement('canvas');
+             raster.width = bw;
+             raster.height = bh;
+             const rCtx = raster.getContext('2d');
+             if (rCtx) {
+                 rCtx.save();
+                 rCtx.translate(-bx, -by);
+                 // Draw all visible layers
+                 const renderLayersFlat = (layerList: Layer[]) => {
+                     [...layerList].reverse().forEach(layer => {
+                         if (!layer.visible) return;
+                         const effectiveProps = getEffectiveLayerProps(layers, layer.id);
+                         if (!effectiveProps.visible) return;
+                         rCtx.save();
+                         rCtx.globalAlpha = effectiveProps.opacity / 100;
+                         paths.filter(p => p.layerId === layer.id).forEach(p => drawPath(rCtx, p));
+                         layer.pastedImage?.forEach(img => {
+                             const w = img.width ?? img.imageData.width;
+                             const h = img.height ?? img.imageData.height;
+                             const cx = img.x + w / 2;
+                             const cy = img.y + h / 2;
+                             rCtx.save();
+                             rCtx.translate(cx, cy);
+                             if (img.rotation) rCtx.rotate(img.rotation);
+                             rCtx.drawImage(img.imageData, -w/2, -h/2, w, h);
+                             rCtx.restore();
+                         });
+                         if (layer.type === 'group' && layer.layers) renderLayersFlat(layer.layers);
+                         rCtx.restore();
+                     });
+                 };
+                 renderLayersFlat(layers);
+                 rCtx.restore();
+             }
+             transformRasterRef.current = raster;
+             transformRasterOriginRef.current = { x: bx, y: by };
+             // Collect all layer IDs that were captured
+             const collectAllIds = (layerList: Layer[]): number[] => {
+                 let ids: number[] = [];
+                 for (const l of layerList) {
+                     if (l.visible) {
+                         ids.push(l.id);
+                         if (l.type === 'group' && l.layers) ids = ids.concat(collectAllIds(l.layers));
+                     }
+                 }
+                 return ids;
+             };
+             transformCapturedLayerIdsRef.current = collectAllIds(layers);
+
+             setTransformSession({
+                 isActive: true, action: 'idle', grabHandle: null,
+                 startMouse: {x:0,y:0,pressure:0},
+                 initialRect: { x: bx, y: by, width: bw, height: bh },
+                 currentRect: { x: bx, y: by, width: bw, height: bh },
+                 rotation: 0,
+                 initialRotation: 0
+             });
+         }
+     } else if (activeTool !== 'transform' && transformSession) {
+         setTransformSession(null);
+         transformRasterRef.current = null;
+     }
+  }, [activeTool, transformSession, selection, activeLayerId, paths, layers]);
 
     const getAdjustedPressure = useCallback((inputPressure: number) => {
         if (inputPressure <= 0) return 0;
@@ -193,16 +363,18 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
         getSelectionImageData: () => {
             const canvas = canvasRef.current;
             const context = contextRef.current;
-            if (!canvas || !context || !selection) return null;
+            if (!canvas || !context) return null;
+
+            const sel = selection || { x: 0, y: 0, width: canvas.width / transform.zoom, height: canvas.height / transform.zoom };
 
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = canvas.width;
-            tempCanvas.height = canvas.height;
+            tempCanvas.width = sel.width;
+            tempCanvas.height = sel.height;
             const tempContext = tempCanvas.getContext('2d');
             if (!tempContext) return null;
             
             tempContext.save();
-            applyTransform(tempContext, false);
+            tempContext.translate(-sel.x, -sel.y);
             paths.filter(p => p.layerId === activeLayerId).forEach(path => drawPath(tempContext, path));
             
             const activeLayer = findLayer(layers, activeLayerId);
@@ -211,15 +383,110 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
             });
             tempContext.restore();
 
-            return tempContext.getImageData(selection.x, selection.y, selection.width, selection.height);
+            return tempContext.getImageData(0, 0, sel.width, sel.height);
+        },
+        getLayerRaster: (layerId: number) => {
+            const l = findLayer(layers, layerId);
+            if (!l) return null;
+
+            const allPaths: Path[] = [];
+            const allImages: { imageData: HTMLCanvasElement; x: number; y: number; rotation?: number; width?: number; height?: number }[] = [];
+
+            const collectRecursive = (layer: Layer) => {
+                paths.filter(p => p.layerId === layer.id).forEach(p => allPaths.push(p));
+                layer.pastedImage?.forEach(img => allImages.push(img));
+                if (layer.type === 'group' && layer.layers) {
+                    layer.layers.forEach(child => collectRecursive(child));
+                }
+            };
+
+            collectRecursive(l);
+
+            // Compute bounding box
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            
+            allPaths.forEach(p => {
+                p.points.forEach(pt => {
+                    const radius = p.strokeWidth / 2;
+                    minX = Math.min(minX, pt.x - radius);
+                    minY = Math.min(minY, pt.y - radius);
+                    maxX = Math.max(maxX, pt.x + radius);
+                    maxY = Math.max(maxY, pt.y + radius);
+                });
+            });
+
+            allImages.forEach(img => {
+                const w = img.width ?? img.imageData.width;
+                const h = img.height ?? img.imageData.height;
+                minX = Math.min(minX, img.x);
+                minY = Math.min(minY, img.y);
+                maxX = Math.max(maxX, img.x + w);
+                maxY = Math.max(maxY, img.y + h);
+            });
+
+            if (minX === Infinity) return null;
+
+            const width = Math.ceil(maxX - minX);
+            const height = Math.ceil(maxY - minY);
+            if (width <= 0 || height <= 0) return null;
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = width;
+            tempCanvas.height = height;
+            const tempCtx = tempCanvas.getContext('2d');
+            if (!tempCtx) return null;
+
+            tempCtx.save();
+            tempCtx.translate(-minX, -minY);
+            
+            // Note: This draws in a specific order. To be perfectly accurate we'd nestedly draw layers.
+            // But since we are flattening, drawing all paths then all images of the collected set is a decent approximation.
+            // Better: Re-use drawLayers logic on a temporary context? 
+            // Yes, let's use a simplified drawLayers logic here to preserve inter-layer ordering.
+            
+            const drawRecursive = (layer: Layer, ctx: CanvasRenderingContext2D) => {
+                const effectiveProps = getEffectiveLayerProps(layers, layer.id);
+                if (!effectiveProps.visible) return;
+
+                ctx.save();
+                ctx.globalAlpha = effectiveProps.opacity / 100;
+
+                const layerPaths = paths.filter(p => p.layerId === layer.id);
+                layerPaths.forEach(path => drawPath(ctx, path));
+                
+                layer.pastedImage?.forEach(img => {
+                    const w = img.width ?? img.imageData.width;
+                    const h = img.height ?? img.imageData.height;
+                    const cx = img.x + w / 2;
+                    const cy = img.y + h / 2;
+                    ctx.save();
+                    ctx.translate(cx, cy);
+                    if (img.rotation) ctx.rotate(img.rotation);
+                    ctx.drawImage(img.imageData, -w/2, -h/2, w, h);
+                    ctx.restore();
+                });
+                
+                if (layer.type === 'group' && layer.layers) {
+                    // Draw children in reverse (bottom up)
+                    [...layer.layers].reverse().forEach(child => drawRecursive(child, ctx));
+                }
+                ctx.restore();
+            };
+            
+            drawRecursive(l, tempCtx);
+            tempCtx.restore();
+
+            return { imageData: tempCanvas, x: minX, y: minY };
         },
         clearSelection: () => {
-            if (!selection) return;
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const sel = selection || { x: -10000, y: -10000, width: 20000, height: 20000 };
 
             const rectPath: Path = {
                 points: [
-                    {x: selection.x, y: selection.y, pressure: 0},
-                    {x: selection.x + selection.width, y: selection.y + selection.height, pressure: 0}
+                    {x: sel.x, y: sel.y, pressure: 0},
+                    {x: sel.x + sel.width, y: sel.y + sel.height, pressure: 0}
                 ],
                 tool: 'eraser',
                 brushType: 'round',
@@ -228,6 +495,8 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
                 layerId: activeLayerId,
                 shape: 'rectangle',
                 opacity: 100,
+                clipRect: sel,
+                isSelectionInverted: isSelectionInverted,
             };
             setPaths(prev => [...prev, rectPath]);
             setSelection(null);
@@ -246,6 +515,8 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
                 layerId: activeLayerId,
                 shape: 'rectangle',
                 opacity: 100,
+                clipRect: selection,
+                isSelectionInverted: isSelectionInverted,
             };
             setPaths(prev => [...prev, fillPath]);
         },
@@ -305,15 +576,35 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
           }
       }
 
+      const dpr = window.devicePixelRatio || 1;
       const viewMatrix = new DOMMatrix();
+      
+      // Screen space translate by pan offset
       viewMatrix.translateSelf(transform.x, transform.y);
-      viewMatrix.scaleSelf(transform.zoom * (transform.flip.horizontal ? -1 : 1), transform.zoom * (transform.flip.vertical ? -1 : 1));
+      
+      // Pivot for flip/rotation is the center of the drawing area in screen pixels
+      const centerX = (rect.width - rulerSize) / 2;
+      const centerY = (rect.height - rulerSize) / 2;
+      
+      viewMatrix.translateSelf(centerX, centerY);
       viewMatrix.rotateSelf(transform.rotation);
+      viewMatrix.scaleSelf(transform.flip.horizontal ? -1 : 1, transform.flip.vertical ? -1 : 1);
+      viewMatrix.translateSelf(-centerX, -centerY);
+      
+      // Zoom
+      viewMatrix.scaleSelf(transform.zoom, transform.zoom);
       
       const invertedMatrix = viewMatrix.inverse();
       const transformedPoint = new DOMPoint(screenX, screenY).matrixTransform(invertedMatrix);
       
-      const pressure = e.pointerType === 'pen' ? e.pressure : 0.5;
+      let pressure = e.pointerType === 'pen' ? e.pressure : 0.5;
+
+      if (isSimulatingPressure && e.pointerType === 'mouse') {
+          // Create a dynamic pressure value using a sine wave based on time
+          // Oscillates between 0.2 and 1.0 to show clear variation
+          const time = performance.now() / 200; 
+          pressure = 0.6 + Math.sin(time) * 0.4;
+      }
 
       return {
         x: transformedPoint.x,
@@ -339,6 +630,22 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
     if (!effectiveProps.visible || path.points.length < 1) return;
 
     context.save();
+
+    if (path.clipRect) {
+        context.beginPath();
+        if (path.isSelectionInverted) {
+            const WORLD_SIZE = 1e5;
+            context.rect(-WORLD_SIZE, -WORLD_SIZE, WORLD_SIZE * 2, WORLD_SIZE * 2);
+            context.moveTo(path.clipRect.x, path.clipRect.y);
+            context.lineTo(path.clipRect.x, path.clipRect.y + path.clipRect.height);
+            context.lineTo(path.clipRect.x + path.clipRect.width, path.clipRect.y + path.clipRect.height);
+            context.lineTo(path.clipRect.x + path.clipRect.width, path.clipRect.y);
+            context.closePath();
+        } else {
+            context.rect(path.clipRect.x, path.clipRect.y, path.clipRect.width, path.clipRect.height);
+        }
+        context.clip();
+    }
 
     const isPixelRemoval = path.tool === 'eraser';
 
@@ -376,11 +683,14 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
         const rectWidth = end.x - start.x;
         const rectHeight = end.y - start.y;
 
-        if (!isPixelRemoval) {
+        if (isPixelRemoval) {
+            context.fillStyle = '#000000';
+            context.fillRect(start.x, start.y, rectWidth, rectHeight);
+        } else {
             context.strokeStyle = path.color;
+            context.lineWidth = path.strokeWidth;
+            context.strokeRect(start.x, start.y, rectWidth, rectHeight);
         }
-        context.lineWidth = path.strokeWidth;
-        context.strokeRect(start.x, start.y, rectWidth, rectHeight);
         context.restore();
         return;
     }
@@ -465,19 +775,127 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
   };
 
   const drawSelection = (context: CanvasRenderingContext2D) => {
-    if (!selection) return;
+    const activeSel = draftSelection || selection;
+    if (!activeSel) return;
     context.save();
-    context.setLineDash([4, 4]);
-    context.strokeStyle = 'rgba(0, 0, 0, 0.9)';
-    context.lineWidth = 1 / transform.zoom;
-    context.lineDashOffset = -selectionOffset;
-    context.strokeRect(selection.x, selection.y, selection.width, selection.height);
+    
+    let x = activeSel.x;
+    let y = activeSel.y;
+    let w = activeSel.width;
+    let h = activeSel.height;
 
-    context.setLineDash([4, 4]);
-    context.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-    context.lineDashOffset = 4 - selectionOffset;
-    context.strokeRect(selection.x, selection.y, selection.width, selection.height);
+    if (!draftSelection && activeTool === 'transform' && transformSession) {
+        x = transformSession.currentRect.x;
+        y = transformSession.currentRect.y;
+        w = transformSession.currentRect.width;
+        h = transformSession.currentRect.height;
+    } else if (!draftSelection && activeTool === 'move' && moveSession) {
+        x += moveSession.dx;
+        y += moveSession.dy;
+    }
+
+    const dash = 5 / transform.zoom;
+    // Subtle fill for committed selection
+    if (!draftSelection) {
+        context.fillStyle = 'rgba(0, 120, 255, 0.07)';
+        context.fillRect(x, y, w, h);
+    }
+
+    context.setLineDash([dash, dash]);
+    context.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    context.lineWidth = 1.5 / transform.zoom;
+    context.lineDashOffset = -selectionOffset;
+    context.strokeRect(x, y, w, h);
+
+    context.setLineDash([dash, dash]);
+    context.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    context.lineDashOffset = dash - selectionOffset;
+    context.strokeRect(x, y, w, h);
     context.restore();
+  }
+
+  const drawTransformBox = (context: CanvasRenderingContext2D, session: TransformSession) => {
+      context.save();
+      const { currentRect: r, rotation, initialRect } = session;
+      const cx = r.x + r.width/2;
+      const cy = r.y + r.height/2;
+
+      context.translate(cx, cy);
+      context.rotate(rotation);
+      context.translate(-cx, -cy);
+
+      // Draw the rasterized preview of what's being transformed
+      if (transformRasterRef.current) {
+          const raster = transformRasterRef.current;
+          const scaleX = initialRect.width !== 0 ? r.width / initialRect.width : 1;
+          const scaleY = initialRect.height !== 0 ? r.height / initialRect.height : 1;
+          context.save();
+          context.translate(cx, cy);
+          context.scale(scaleX, scaleY);
+          context.drawImage(raster, -raster.width / 2, -raster.height / 2);
+          context.restore();
+      }
+
+      context.strokeStyle = '#0066ff';
+      context.lineWidth = 1.5 / transform.zoom;
+      context.strokeRect(r.x, r.y, r.width, r.height);
+      
+      const hs = 8 / transform.zoom; // handle size
+      const handles = [
+          {x: r.x, y: r.y}, {x: r.x+r.width/2, y: r.y}, {x: r.x+r.width, y: r.y},
+          {x: r.x, y: r.y+r.height/2}, {x: r.x+r.width, y: r.y+r.height/2},
+          {x: r.x, y: r.y+r.height}, {x: r.x+r.width/2, y: r.y+r.height}, {x: r.x+r.width, y: r.y+r.height}
+      ];
+      context.fillStyle = '#ffffff';
+      handles.forEach(p => {
+          context.fillRect(p.x - hs/2, p.y - hs/2, hs, hs);
+          context.strokeRect(p.x - hs/2, p.y - hs/2, hs, hs);
+      });
+      // rotation handle
+      context.beginPath();
+      context.moveTo(cx, r.y);
+      context.lineTo(cx, r.y - 30/transform.zoom);
+      context.stroke();
+      context.beginPath();
+      context.fillStyle = '#0066ff';
+      context.arc(cx, r.y - 30/transform.zoom, hs/2, 0, Math.PI*2);
+      context.fill();
+      context.stroke();
+
+      context.restore();
+  }
+
+  const drawCropOverlay = (context: CanvasRenderingContext2D, session: CropSession) => {
+      context.save();
+      const { currentRect: r } = session;
+      
+      context.fillStyle = 'rgba(0,0,0,0.6)';
+      context.beginPath();
+      context.rect((-transform.x - 5000) / transform.zoom, (-transform.y - 5000) / transform.zoom, 10000 / transform.zoom, 10000 / transform.zoom);
+      context.rect(r.x, r.y, r.width, r.height);
+      context.fill('evenodd');
+
+      context.strokeStyle = '#ffffff';
+      context.lineWidth = 1.5 / transform.zoom;
+      context.setLineDash([4/transform.zoom, 4/transform.zoom]);
+      context.strokeRect(r.x, r.y, r.width, r.height);
+      context.setLineDash([]);
+      
+      if (session.isActive) {
+          const hs = 8 / transform.zoom;
+          const handles = [
+              {x: r.x, y: r.y}, {x: r.x+r.width/2, y: r.y}, {x: r.x+r.width, y: r.y},
+              {x: r.x, y: r.y+r.height/2}, {x: r.x+r.width, y: r.y+r.height/2},
+              {x: r.x, y: r.y+r.height}, {x: r.x+r.width/2, y: r.y+r.height}, {x: r.x+r.width, y: r.y+r.height}
+          ];
+          context.fillStyle = '#ffffff';
+          context.strokeStyle = '#000000';
+          handles.forEach(p => {
+              context.fillRect(p.x - hs/2, p.y - hs/2, hs, hs);
+              context.strokeRect(p.x - hs/2, p.y - hs/2, hs, hs);
+          });
+      }
+      context.restore();
   }
 
   const drawGrid = (context: CanvasRenderingContext2D, width: number, height: number) => {
@@ -513,7 +931,8 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
         const rulerSize = 30;
         context.save();
         
-        context.setTransform(1, 0, 0, 1, 0, 0);
+        const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1;
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
 
         context.fillStyle = RULER_BACKGROUND;
         context.fillRect(0, 0, width, rulerSize);
@@ -532,32 +951,64 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
             cm: ppi / 2.54,
         }[unit];
 
-        const getMajorMark = () => {
-            switch(unit) {
-                case 'px': return 100;
-                case 'in': return ppi;
-                case 'cm': return ppi / 2.54;
-                case 'mm': return ppi / 2.54;
-            }
-        }
-        const majorMark = getMajorMark();
-        const minorMark = {
-            px: majorMark / 10,
-            in: majorMark / 10,
-            cm: majorMark / 10,
-            mm: majorMark / 10,
-        }[unit];
         const { x: panX, y: panY, zoom } = transform;
+        
+        const targetGapScreen = 100;
+        const targetGapWorld = targetGapScreen / zoom;
+        const targetGapUnits = targetGapWorld / conversionFactor;
 
-        const xStartValue = Math.floor(-panX / zoom / minorMark) * minorMark;
-        const xEndValue = (-panX + width) / zoom;
+        let exponent = Math.floor(Math.log10(targetGapUnits));
+        let fraction = targetGapUnits / Math.pow(10, exponent);
+        
+        let niceFraction;
+        if (fraction < 1.5) niceFraction = 1;
+        else if (fraction < 3.5) niceFraction = 2;
+        else if (fraction < 7.5) niceFraction = 5;
+        else { niceFraction = 1; exponent += 1; }
+        
+        let majorMarkUnits = niceFraction * Math.pow(10, exponent);
+        let minorDivisions = 10;
+        
+        if (unit === 'in' && targetGapUnits <= 2) {
+            const denom = Math.pow(2, Math.round(Math.log2(1 / targetGapUnits)));
+            majorMarkUnits = 1 / denom;
+            if (majorMarkUnits >= 1) majorMarkUnits = Math.round(majorMarkUnits);
+            minorDivisions = 8;
+        }
+        
+        const majorMark = majorMarkUnits * conversionFactor;
+        
+        let minorMark = majorMark / minorDivisions;
+        let activeDivisions = minorDivisions;
+        
+        if (minorMark * zoom < 5) {
+            activeDivisions = unit === 'in' ? 4 : 5;
+            minorMark = majorMark / activeDivisions;
+        }
+        if (minorMark * zoom < 5) {
+            activeDivisions = unit === 'in' ? 2 : 2;
+            minorMark = majorMark / activeDivisions;
+        }
+        if (minorMark * zoom < 5) {
+            activeDivisions = 1;
+            minorMark = majorMark;
+        }
 
-        for(let val = xStartValue; val < xEndValue; val += minorMark) {
+        const formatLabel = (val: number) => {
+            const v = val / conversionFactor;
+            return (Math.round(v * 1000) / 1000).toString();
+        };
+
+        const xStartMarkIndex = Math.floor(-panX / zoom / minorMark);
+        const xEndMarkIndex = Math.ceil((-panX + width) / zoom / minorMark);
+
+        for (let i = xStartMarkIndex; i <= xEndMarkIndex; i++) {
+            const val = i * minorMark;
             const screenX = val * zoom + panX + rulerSize;
             if (screenX < rulerSize) continue;
             
-            const isMajor = Math.abs(val % majorMark) < 1e-9 || Math.abs(val % majorMark - majorMark) < 1e-9;
-            const isHalfMark = unit === 'in' && (Math.abs(val % (majorMark/2)) < 1e-9 || Math.abs(val % (majorMark/2) - (majorMark/2)) < 1e-9);
+            const isMajor = i % activeDivisions === 0;
+            const isHalfMark = activeDivisions % 2 === 0 && i % (activeDivisions / 2) === 0;
 
             const markHeight = isMajor ? 10 : isHalfMark ? 7 : 5;
             context.beginPath();
@@ -566,32 +1017,32 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
             context.stroke();
 
             if (isMajor) {
-                 const labelValue = unit === 'mm' ? val / conversionFactor * 10 : val / conversionFactor;
-                context.fillText(Math.round(labelValue).toString(), screenX, rulerSize - 15);
+                context.fillText(formatLabel(val), screenX, rulerSize - 15);
             }
         }
         
-        const yStartValue = Math.floor(-panY / zoom / minorMark) * minorMark;
-        const yEndValue = (-panY + height) / zoom;
-        
-        for(let val = yStartValue; val < yEndValue; val += minorMark) {
+        const yStartMarkIndex = Math.floor(-panY / zoom / minorMark);
+        const yEndMarkIndex = Math.ceil((-panY + height) / zoom / minorMark);
+
+        for (let i = yStartMarkIndex; i <= yEndMarkIndex; i++) {
+            const val = i * minorMark;
             const screenY = val * zoom + panY + rulerSize;
             if (screenY < rulerSize) continue;
 
-            const isMajor = Math.abs(val % majorMark) < 1e-9 || Math.abs(val % majorMark - majorMark) < 1e-9;
-            const isHalfMark = unit === 'in' && (Math.abs(val % (majorMark/2)) < 1e-9 || Math.abs(val % (majorMark/2) - (majorMark/2)) < 1e-9);
-            
+            const isMajor = i % activeDivisions === 0;
+            const isHalfMark = activeDivisions % 2 === 0 && i % (activeDivisions / 2) === 0;
+
             const markWidth = isMajor ? 10 : isHalfMark ? 7 : 5;
             context.beginPath();
             context.moveTo(rulerSize, screenY);
             context.lineTo(rulerSize - markWidth, screenY);
             context.stroke();
+
             if (isMajor) {
                 context.save();
                 context.translate(rulerSize - 15, screenY);
                 context.rotate(-Math.PI / 2);
-                const labelValue = unit === 'mm' ? val / conversionFactor * 10 : val / conversionFactor;
-                context.fillText(Math.round(labelValue).toString(), 0, 0);
+                context.fillText(formatLabel(val), 0, 0);
                 context.restore();
             }
         }
@@ -656,22 +1107,26 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
         const canvas = canvasRef.current;
         if (!canvas) return;
         
+        const dpr = window.devicePixelRatio || 1;
         const rulerSize = showRulers && includeRulerOffset ? 30 : 0;
+        
+        // Use setTransform to avoid stacking from DRP or previous calls
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
         context.translate(rulerSize, rulerSize);
 
+        // Pan offset
         context.translate(transform.x, transform.y);
         
-        const centerX = (canvas.width - rulerSize) / (2 * transform.zoom);
-        const centerY = (canvas.height - rulerSize) / (2 * transform.zoom);
-        
-        context.translate(centerX, centerY);
-        context.scale(transform.flip.horizontal ? -1 : 1, transform.flip.vertical ? -1 : 1);
-        context.translate(-centerX, -centerY);
+        // Pivot point (center of the visible drawing area in screen pixels)
+        const centerX = (canvas.width / dpr - rulerSize) / 2;
+        const centerY = (canvas.height / dpr - rulerSize) / 2;
         
         context.translate(centerX, centerY);
         context.rotate(transform.rotation * Math.PI / 180);
+        context.scale(transform.flip.horizontal ? -1 : 1, transform.flip.vertical ? -1 : 1);
         context.translate(-centerX, -centerY);
-
+        
+        // Zoom
         context.scale(transform.zoom, transform.zoom);
   }, [transform, showRulers]);
     
@@ -692,14 +1147,28 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
       const effectiveProps = getEffectiveLayerProps(layers, layer.id);
       if (!effectiveProps.visible) return;
 
+      // While a transform raster exists, hide all captured layers — the raster is drawn
+      // by drawTransformBox and represents the current visual state.
+      if (transformRasterRef.current && transformCapturedLayerIdsRef.current.includes(layer.id)) {
+          return;
+      }
+
       const layerPaths = paths.filter(p => p.layerId === layer.id);
       const isCurrentLayer = (currentPath && currentPath.layerId === layer.id);
       const hasEraser = layerPaths.some(p => p.tool === 'eraser') || (isCurrentLayer && currentPath?.tool === 'eraser');
+      const isTransformLayer = (activeTool === 'transform' && transformSession && layer.id === activeLayerId);
 
       if (!hasEraser) {
           context.save();
           context.globalAlpha = effectiveProps.opacity / 100;
           
+          if (isTransformLayer && transformSession) {
+             const m = getTransformMatrix(transformSession);
+             context.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+          } else if (activeTool === 'move' && moveSession && layer.id === activeLayerId) {
+             context.translate(moveSession.dx, moveSession.dy);
+          }
+
           layerPaths.forEach(path => drawPath(context, path));
           if (isCurrentLayer && currentPath) {
               drawPath(context, currentPath);
@@ -707,7 +1176,15 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
           
           if (layer.pastedImage) {
             layer.pastedImage.forEach(img => {
-                context.drawImage(img.imageData, img.x, img.y);
+                context.save();
+                const w = img.width ?? img.imageData.width;
+                const h = img.height ?? img.imageData.height;
+                const cx = img.x + w / 2;
+                const cy = img.y + h / 2;
+                context.translate(cx, cy);
+                if (img.rotation) context.rotate(img.rotation);
+                context.drawImage(img.imageData, -w/2, -h/2, w, h);
+                context.restore();
             });
           }
 
@@ -729,13 +1206,30 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
           offCtx.save();
           offCtx.setTransform(context.getTransform());
 
+          if (isTransformLayer && transformSession) {
+             const m = getTransformMatrix(transformSession);
+             offCtx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+          } else if (activeTool === 'move' && moveSession && layer.id === activeLayerId) {
+             offCtx.translate(moveSession.dx, moveSession.dy);
+          }
+
           layerPaths.forEach(path => drawPath(offCtx, path));
           if (isCurrentLayer && currentPath) {
               drawPath(offCtx, currentPath);
           }
           
           if (layer.pastedImage) {
-            layer.pastedImage.forEach(img => offCtx.drawImage(img.imageData, img.x, img.y));
+            layer.pastedImage.forEach(img => {
+                offCtx.save();
+                const w = img.width ?? img.imageData.width;
+                const h = img.height ?? img.imageData.height;
+                const cx = img.x + w / 2;
+                const cy = img.y + h / 2;
+                offCtx.translate(cx, cy);
+                if (img.rotation) offCtx.rotate(img.rotation);
+                offCtx.drawImage(img.imageData, -w/2, -h/2, w, h);
+                offCtx.restore();
+            });
           }
 
           if (layer.type === 'group' && layer.layers) {
@@ -769,45 +1263,55 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
     context.save();
     applyTransform(context);
     
-    context.save();
-
-    if (selection) {
-        context.beginPath();
-        if (isSelectionInverted) {
-            const WORLD_SIZE = 1e5;
-            context.rect(-WORLD_SIZE, -WORLD_SIZE, WORLD_SIZE * 2, WORLD_SIZE * 2);
-            context.moveTo(selection.x, selection.y);
-            context.lineTo(selection.x, selection.y + selection.height);
-            context.lineTo(selection.x + selection.width, selection.y + selection.height);
-            context.lineTo(selection.x + selection.width, selection.y);
-            context.closePath();
-        } else {
-            context.rect(selection.x, selection.y, selection.width, selection.height);
-        }
-      context.clip();
-    }
-    
     drawLayers(context, layers, layerCanvasPoolRef.current);
 
-    context.restore();
-    
     if (selection) {
       drawSelection(context);
+    }
+    if (activeTool === 'transform' && transformSession) {
+      drawTransformBox(context, transformSession);
     }
     if (ruler) {
       drawRulerTool(context);
     }
-
-    context.restore();
-
+    if (activeTool === 'crop' && cropSession) {
+      drawCropOverlay(context, cropSession);
+    }
+    const dpr = window.devicePixelRatio || 1;
+    if (showGrid) {
+      drawGrid(context, canvas.width / dpr, canvas.height / dpr);
+    }
     if (showRulers) {
-      drawRulers(context, canvas.width, canvas.height);
+      drawRulers(context, canvas.width / dpr, canvas.height / dpr);
     }
     
+    // --- Channel Post-processing ---
+    if (activeChannel !== 'all') {
+        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i+1];
+            const b = data[i+2];
+            const a = data[i+3];
+            let val = 0;
+            if (activeChannel === 'red') val = r;
+            else if (activeChannel === 'green') val = g;
+            else if (activeChannel === 'blue') val = b;
+            else if (activeChannel === 'alpha') val = a;
+            
+            data[i] = val;
+            data[i+1] = val;
+            data[i+2] = val;
+            data[i+3] = 255; // Render as opaque grayscale for intensity visualization
+        }
+        context.putImageData(imageData, 0, 0);
+    }
+
     if (context) {
         context.globalCompositeOperation = 'source-over';
     }
-  }, [paths, currentPath, transform, selection, layers, showGrid, showRulers, drawRulers, ruler, isSelectionInverted, canvasFrame, canvasBackgroundColor, selectionOffset, applyTransform]);
+  }, [paths, currentPath, transform, selection, layers, showGrid, showRulers, drawRulers, ruler, isSelectionInverted, canvasFrame, canvasBackgroundColor, selectionOffset, applyTransform, activeChannel]);
 
     useEffect(() => {
         const animate = () => {
@@ -879,8 +1383,9 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
       brushType: isPixelRemoval ? 'round' : brushType,
       layerId: activeLayerId,
       opacity: isPixelRemoval ? brushOpacity : 100,
+      clipRect: selection ? { ...selection } : null,
+      isSelectionInverted: isSelectionInverted,
     });
-    setUndonePaths([]);
   };
 
   const continueDrawing = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -918,24 +1423,34 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
 
   const startShapeOrSelect = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const activeLayer = findLayer(layers, activeLayerId);
-    if (activeTool === 'shape' && activeLayer?.type === 'group') {
-        return;
-    }
-    setIsDrawing(true);
+    if (activeTool === 'shape' && activeLayer?.type === 'group') return;
+
     const point = getTransformedPoint(e);
-    setStartPoint(point);
-     if (activeTool === 'select' && selection) {
-      if (point.x < selection.x || point.x > selection.x + selection.width ||
-          point.y < selection.y || point.y > selection.y + selection.height) {
-        setSelection(null);
-      } else {
-         setIsDrawing(false);
+
+    if (activeTool === 'select') {
+      // If there is an existing selection and we click INSIDE it, start moving it
+      if (selection &&
+          point.x >= selection.x && point.x <= selection.x + selection.width &&
+          point.y >= selection.y && point.y <= selection.y + selection.height) {
+        setMovingSelection({ startX: point.x, startY: point.y, initialSelX: selection.x, initialSelY: selection.y });
+        setIsDrawing(true);
+        setStartPoint(point);
         return;
       }
-    } else if (activeTool === 'select' || activeTool === 'lasso') {
-        setSelection(null);
+      // Otherwise start a fresh drag — do NOT clear selection yet (we keep
+      // the old one visible until the user actually drags a new region)
+      setDraftSelection({ x: point.x, y: point.y, width: 0, height: 0 });
+      setIsDrawing(true);
+      setStartPoint(point);
+      return;
     }
 
+    // lasso / shape — existing behaviour
+    setIsDrawing(true);
+    setStartPoint(point);
+    if (activeTool === 'lasso') {
+      setSelection(null);
+    }
 
     if (activeTool === 'shape') {
         setCurrentPath({
@@ -947,23 +1462,40 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
             brushType: 'round',
             layerId: activeLayerId,
             opacity: 100,
+            clipRect: selection ? { ...selection } : null,
+            isSelectionInverted: isSelectionInverted,
         });
     }
-    setUndonePaths([]);
   }
 
   const continueShapeOrSelect = (e: React.PointerEvent<HTMLCanvasElement>) => {
-      if (!isDrawing || !startPoint) return;
       const endPoint = getTransformedPoint(e);
 
-      if (activeTool === 'select' || activeTool === 'lasso') {
-          const newSelection = {
+      if (movingSelection && selection) {
+          const dx = endPoint.x - movingSelection.startX;
+          const dy = endPoint.y - movingSelection.startY;
+          setSelection({ ...selection, x: movingSelection.initialSelX + dx, y: movingSelection.initialSelY + dy });
+          return;
+      }
+
+      if (!isDrawing || !startPoint) return;
+
+      if (activeTool === 'select') {
+          const newSel = {
               x: Math.min(startPoint.x, endPoint.x),
               y: Math.min(startPoint.y, endPoint.y),
               width: Math.abs(startPoint.x - endPoint.x),
               height: Math.abs(startPoint.y - endPoint.y)
           };
-          setSelection(newSelection);
+          setDraftSelection(newSel);
+      } else if (activeTool === 'lasso') {
+          const newSel = {
+              x: Math.min(startPoint.x, endPoint.x),
+              y: Math.min(startPoint.y, endPoint.y),
+              width: Math.abs(startPoint.x - endPoint.x),
+              height: Math.abs(startPoint.y - endPoint.y)
+          };
+          setSelection(newSel);
       } else if (activeTool === 'shape' && currentPath) {
           setCurrentPath({
               ...currentPath,
@@ -973,15 +1505,33 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
   }
 
   const finishShapeOrSelect = () => {
+      if (movingSelection) {
+          setMovingSelection(null);
+          setIsDrawing(false);
+          setStartPoint(null);
+          return;
+      }
+
+      if (activeTool === 'select') {
+          if (draftSelection && (draftSelection.width > 2 || draftSelection.height > 2)) {
+              // Commit draft to real selection
+              setSelection(draftSelection);
+          } else {
+              // Tiny drag = click outside = deselect
+              setSelection(null);
+          }
+          setDraftSelection(null);
+          setIsDrawing(false);
+          setStartPoint(null);
+          return;
+      }
+      
       if (activeTool === 'shape' && currentPath) {
           setPaths(prev => [...prev, currentPath]);
           setCurrentPath(null);
       }
       setIsDrawing(false);
       setStartPoint(null);
-      if(activeTool === 'select' && selection?.width === 0 && selection?.height === 0) {
-          setSelection(null);
-      }
   }
 
 
@@ -1007,6 +1557,150 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
     setActiveTool('brush');
   }
 
+  const performFloodFill = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const tempContext = tempCanvas.getContext('2d', { willReadFrequently: true });
+    if (!tempContext) return;
+    drawLayers(tempContext, layers, layerCanvasPoolRef.current);
+
+    const point = getTransformedPoint(e);
+    const startX = Math.floor(point.x);
+    const startY = Math.floor(point.y);
+
+    if (startX < 0 || startY < 0 || startX >= tempCanvas.width || startY >= tempCanvas.height) return;
+
+    const imageData = tempContext.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+    const data = new Uint32Array(imageData.data.buffer);
+    
+    const targetIdx = startY * tempCanvas.width + startX;
+    const targetColor = data[targetIdx];
+    
+    const rMatch = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(brushColor);
+    if (!rMatch) return;
+    const fillR = parseInt(rMatch[1], 16);
+    const fillG = parseInt(rMatch[2], 16);
+    const fillB = parseInt(rMatch[3], 16);
+    const fillA = Math.round((brushOpacity / 100) * 255);
+    const fillColor32 = (fillA << 24) | (fillB << 16) | (fillG << 8) | fillR;
+
+    const extractComponents = (c: number) => ({
+       r: c & 0xFF,
+       g: (c >> 8) & 0xFF,
+       b: (c >> 16) & 0xFF,
+       a: (c >> 24) & 0xFF
+    });
+
+    const targetC = extractComponents(targetColor);
+    
+    const colorMatch = (c: number) => {
+        const testC = extractComponents(c);
+        const dr = testC.r - targetC.r;
+        const dg = testC.g - targetC.g;
+        const db = testC.b - targetC.b;
+        const da = testC.a - targetC.a;
+        return (dr*dr + dg*dg + db*db + da*da) <= fillTolerance * fillTolerance;
+    };
+
+    if (colorMatch(fillColor32) && brushOpacity === 100) return;
+
+    const w = tempCanvas.width;
+    const h = tempCanvas.height;
+    const mask = new Uint8Array(w * h);
+    
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+
+    if (!fillContiguous) {
+        for (let i = 0; i < data.length; i++) {
+            if (colorMatch(data[i])) {
+               mask[i] = 1;
+               const x = i % w;
+               const y = Math.floor(i / w);
+               if (x < minX) minX = x;
+               if (x > maxX) maxX = x;
+               if (y < minY) minY = y;
+               if (y > maxY) maxY = y;
+            }
+        }
+    } else {
+        const stack = [startX, startY];
+        while (stack.length > 0) {
+            let y = stack.pop()!;
+            let x = stack.pop()!;
+            
+            let i = y * w + x;
+            while (y >= 0 && colorMatch(data[i]) && mask[i] === 0) {
+                y--;
+                i -= w;
+            }
+            y++;
+            i += w;
+            
+            let spanLeft = false;
+            let spanRight = false;
+            
+            while (y < h && colorMatch(data[i]) && mask[i] === 0) {
+               mask[i] = 1;
+               if (x < minX) minX = x;
+               if (x > maxX) maxX = x;
+               if (y < minY) minY = y;
+               if (y > maxY) maxY = y;
+
+               if (x > 0) {
+                  if (colorMatch(data[i - 1]) && mask[i - 1] === 0) {
+                      if (!spanLeft) {
+                          stack.push(x - 1, y);
+                          spanLeft = true;
+                      }
+                  } else {
+                      spanLeft = false;
+                  }
+               }
+               if (x < w - 1) {
+                  if (colorMatch(data[i + 1]) && mask[i + 1] === 0) {
+                      if (!spanRight) {
+                          stack.push(x + 1, y);
+                          spanRight = true;
+                      }
+                  } else {
+                      spanRight = false;
+                  }
+               }
+               y++;
+               i += w;
+            }
+        }
+    }
+
+    if (maxX < minX || maxY < minY) return;
+
+    const outW = maxX - minX + 1;
+    const outH = maxY - minY + 1;
+    const outputCanvas = document.createElement('canvas');
+    outputCanvas.width = outW;
+    outputCanvas.height = outH;
+    const outCtx = outputCanvas.getContext('2d');
+    if (!outCtx) return;
+
+    const outImageData = outCtx.createImageData(outW, outH);
+    const outData32 = new Uint32Array(outImageData.data.buffer);
+    
+    for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+            if (mask[y * w + x] === 1) {
+                outData32[(y - minY) * outW + (x - minX)] = fillColor32;
+            }
+        }
+    }
+    outCtx.putImageData(outImageData, 0, 0);
+
+    onPaintBucketFill(outputCanvas, minX, minY);
+  }
+
   const startRuler = (e: React.PointerEvent<HTMLCanvasElement>) => {
       setIsDrawing(true);
       const point = getTransformedPoint(e);
@@ -1026,20 +1720,169 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
       }, 1500);
   }
 
+  const startMoving = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      setIsDrawing(true);
+      const point = getTransformedPoint(e);
+      setMoveSession({ startX: point.x, startY: point.y, dx: 0, dy: 0 });
+  }
+
+  const continueMoving = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (!isDrawing || !moveSession) return;
+      const point = getTransformedPoint(e);
+      setMoveSession(prev => prev ? { ...prev, dx: point.x - prev.startX, dy: point.y - prev.startY } : null);
+  }
+
+  const finishTransform = () => {
+      if (!isDrawing) return;
+      if (transformSession && transformRasterRef.current) {
+          const { currentRect: r, rotation, initialRect } = transformSession;
+
+          // Build the final committed canvas: draw the raster with the
+          // live transform applied, at world-space 1:1 scale.
+          const outW = Math.ceil(Math.abs(r.width) + Math.abs(r.height) * Math.abs(Math.sin(rotation)) * 2);
+          const outH = Math.ceil(Math.abs(r.height) + Math.abs(r.width) * Math.abs(Math.sin(rotation)) * 2);
+          const safeDim = Math.max(outW, outH, 1);
+          const out = document.createElement('canvas');
+          out.width = safeDim;
+          out.height = safeDim;
+          const outCtx = out.getContext('2d')!;
+
+          const cx = safeDim / 2;
+          const cy = safeDim / 2;
+
+          outCtx.save();
+          outCtx.translate(cx, cy);
+          outCtx.rotate(rotation);
+          // Scale from initial to current size
+          const scaleX = initialRect.width !== 0 ? r.width / initialRect.width : 1;
+          const scaleY = initialRect.height !== 0 ? r.height / initialRect.height : 1;
+          outCtx.scale(scaleX, scaleY);
+          outCtx.drawImage(
+              transformRasterRef.current,
+              -transformRasterRef.current.width / 2,
+              -transformRasterRef.current.height / 2
+          );
+          outCtx.restore();
+
+          // Destination top-left in world coords
+          const destX = Math.round(r.x + r.width / 2 - safeDim / 2);
+          const destY = Math.round(r.y + r.height / 2 - safeDim / 2);
+
+          onCommitTransformRaster?.(
+              out,
+              destX,
+              destY,
+              transformCapturedLayerIdsRef.current,
+              selection
+          );
+          setSelection(null);
+      }
+      transformRasterRef.current = null;
+      setTransformSession(null);
+      setIsDrawing(false);
+  }
+
+  const finishMoving = () => {
+      if (moveSession && (moveSession.dx !== 0 || moveSession.dy !== 0)) {
+          if (selection) {
+              setSelection({
+                  ...selection,
+                  x: selection.x + moveSession.dx,
+                  y: selection.y + moveSession.dy
+              });
+          }
+      }
+      setMoveSession(null);
+      setIsDrawing(false);
+  }
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    
     if (e.button !== 0 && e.button !== 1) return;
     
     if ((activeTool === 'pan' || e.button === 1 || isSpacebarDown) && !lockView) {
       startPanning(e);
+    } else if (activeTool === 'move') {
+      startMoving(e);
     } else if (activeTool === 'brush' || activeTool === 'eraser') {
       startDrawing(e);
     } else if (activeTool === 'select' || activeTool === 'lasso' || activeTool === 'shape') {
       startShapeOrSelect(e);
+    } else if (activeTool === 'fill') {
+      performFloodFill(e);
     } else if (activeTool === 'pipette') {
       usePipette(e);
     } else if (activeTool === 'ruler') {
       startRuler(e);
+    } else if (activeTool === 'crop') {
+        const point = getTransformedPoint(e);
+        if (cropSession) {
+            const { currentRect: r } = cropSession;
+            const hs = 15 / transform.zoom;
+            const checkHit = (hx: number, hy: number) => Math.abs(point.x - hx) < hs && Math.abs(point.y - hy) < hs;
+            let hit: any = null;
+            if (checkHit(r.x, r.y)) hit = 'tl';
+            else if (checkHit(r.x+r.width, r.y)) hit = 'tr';
+            else if (checkHit(r.x, r.y+r.height)) hit = 'bl';
+            else if (checkHit(r.x+r.width, r.y+r.height)) hit = 'br';
+            else if (checkHit(r.x+r.width/2, r.y)) hit = 't';
+            else if (checkHit(r.x+r.width/2, r.y+r.height)) hit = 'b';
+            else if (checkHit(r.x, r.y+r.height/2)) hit = 'l';
+            else if (checkHit(r.x+r.width, r.y+r.height/2)) hit = 'r';
+            
+            if (hit) {
+                setCropSession(prev => prev ? {...prev, action: 'resize', grabHandle: hit, startMouse: point, initialRect: {...prev.currentRect}} : null);
+                setIsDrawing(true);
+                return;
+            }
+            if (point.x > r.x && point.x < r.x + r.width && point.y > r.y && point.y < r.y + r.height) {
+                setCropSession(prev => prev ? {...prev, action: 'move', grabHandle: 'center', startMouse: point, initialRect: {...prev.currentRect}} : null);
+                setIsDrawing(true);
+                return;
+            }
+        }
+        setCropSession({ isActive: true, action: 'create', grabHandle: null, startMouse: point, initialRect: {x: point.x, y: point.y, width: 0, height: 0}, currentRect: {x: point.x, y: point.y, width: 0, height: 0} });
+        setIsDrawing(true);
+    } else if (activeTool === 'transform' && transformSession) {
+        const point = getTransformedPoint(e);
+        const { currentRect: r } = transformSession;
+        const cx = r.x + r.width/2;
+        const cy = r.y + r.height/2;
+
+        const rotDist = Math.hypot(point.x - cx, point.y - (r.y - 30/transform.zoom));
+        if (rotDist < 15/transform.zoom) {
+            setTransformSession(prev => prev ? {...prev, action: 'rotate', grabHandle: 'rot', startMouse: point, initialRotation: prev.rotation} : null);
+            setIsDrawing(true);
+            return;
+        }
+
+        const hs = 15 / transform.zoom;
+        const checkHit = (hx: number, hy: number) => Math.abs(point.x - hx) < hs && Math.abs(point.y - hy) < hs;
+        let hit: any = null;
+        if (checkHit(r.x, r.y)) hit = 'tl';
+        else if (checkHit(r.x+r.width, r.y)) hit = 'tr';
+        else if (checkHit(r.x, r.y+r.height)) hit = 'bl';
+        else if (checkHit(r.x+r.width, r.y+r.height)) hit = 'br';
+        else if (checkHit(r.x+r.width/2, r.y)) hit = 't';
+        else if (checkHit(r.x+r.width/2, r.y+r.height)) hit = 'b';
+        else if (checkHit(r.x, r.y+r.height/2)) hit = 'l';
+        else if (checkHit(r.x+r.width, r.y+r.height/2)) hit = 'r';
+        
+        if (hit) {
+            setTransformSession(prev => prev ? {...prev, action: 'scale', grabHandle: hit, startMouse: point, initialRect: {...prev.currentRect}} : null);
+            setIsDrawing(true);
+            return;
+        }
+
+        if (point.x > r.x && point.x < r.x + r.width && point.y > r.y && point.y < r.y + r.height) {
+            setTransformSession(prev => prev ? {...prev, action: 'move', grabHandle: 'center', startMouse: point, initialRect: {...prev.currentRect}} : null);
+            setIsDrawing(true);
+            return;
+        }
+
+        setTransformSession(prev => prev ? {...prev, action: 'rotate', grabHandle: 'rot', startMouse: point, initialRotation: prev.rotation} : null);
+        setIsDrawing(true);
     }
   };
 
@@ -1051,20 +1894,106 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
     
     if (isPanning) {
       continuePanning(e);
+    } else if (isDrawing && activeTool === 'move') {
+      continueMoving(e);
     } else if (isDrawing && (activeTool === 'brush' || activeTool === 'eraser')) {
       continueDrawing(e);
     } else if (isDrawing && (activeTool === 'select' || activeTool === 'lasso' || activeTool === 'shape')) {
         continueShapeOrSelect(e);
     } else if (isDrawing && activeTool === 'ruler') {
         continueRuler(e);
+    } else if (isDrawing && activeTool === 'transform' && transformSession) {
+        const point = getTransformedPoint(e);
+        const dx = point.x - transformSession.startMouse.x;
+        const dy = point.y - transformSession.startMouse.y;
+        
+        setTransformSession(prev => {
+            if (!prev) return prev;
+            if (prev.action === 'move') {
+                return { ...prev, currentRect: { ...prev.initialRect, x: prev.initialRect.x + dx, y: prev.initialRect.y + dy } };
+            } else if (prev.action === 'scale') {
+                let { x, y, width, height } = prev.initialRect;
+                if (prev.grabHandle?.includes('l')) { x += dx; width -= dx; }
+                if (prev.grabHandle?.includes('r')) { width += dx; }
+                if (prev.grabHandle?.includes('t')) { y += dy; height -= dy; }
+                if (prev.grabHandle?.includes('b')) { height += dy; }
+
+                if (e.shiftKey) { 
+                    const aspect = prev.initialRect.width / prev.initialRect.height;
+                    // Proportional scaling mapped intuitively to grab point
+                    if (Math.abs(width) > Math.abs(height * aspect)) { height = width / aspect; } 
+                    else { width = height * aspect; }
+                }
+                return { ...prev, currentRect: { x, y, width, height } };
+            } else if (prev.action === 'rotate') {
+                const cx = prev.currentRect.x + prev.currentRect.width/2;
+                const cy = prev.currentRect.y + prev.currentRect.height/2;
+                const startAngle = Math.atan2(prev.startMouse.y - cy, prev.startMouse.x - cx);
+                const curAngle = Math.atan2(point.y - cy, point.x - cx);
+                let diff = curAngle - startAngle;
+                let newRot = prev.initialRotation + diff;
+                if (e.shiftKey) {
+                    const snap = 15 * Math.PI / 180;
+                    newRot = Math.round(newRot / snap) * snap;
+                }
+                return { ...prev, rotation: newRot };
+            }
+            return prev;
+        });
+    } else if (isDrawing && activeTool === 'crop' && cropSession) {
+        const point = getTransformedPoint(e);
+        const dx = point.x - cropSession.startMouse.x;
+        const dy = point.y - cropSession.startMouse.y;
+        
+        setCropSession(prev => {
+            if (!prev) return prev;
+            if (prev.action === 'create') {
+                const width = point.x - prev.startMouse.x;
+                const height = point.y - prev.startMouse.y;
+                return { ...prev, currentRect: { ...prev.initialRect, width, height } };
+            } else if (prev.action === 'move') {
+                return { ...prev, currentRect: { ...prev.initialRect, x: prev.initialRect.x + dx, y: prev.initialRect.y + dy } };
+            } else if (prev.action === 'resize') {
+                let { x, y, width, height } = prev.initialRect;
+                if (prev.grabHandle?.includes('l')) { x += dx; width -= dx; }
+                if (prev.grabHandle?.includes('r')) { width += dx; }
+                if (prev.grabHandle?.includes('t')) { y += dy; height -= dy; }
+                if (prev.grabHandle?.includes('b')) { height += dy; }
+
+                if (e.shiftKey) { 
+                    const aspect = prev.initialRect.width / prev.initialRect.height;
+                    if (Math.abs(width) > Math.abs(height * aspect)) { height = width / aspect; } 
+                    else { width = height * aspect; }
+                }
+                return { ...prev, currentRect: { x, y, width, height } };
+            }
+            return prev;
+        });
     }
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.releasePointerCapture(e.pointerId);
     if (isPanning) finishPanning();
+    if (isDrawing && activeTool === 'move') finishMoving();
     if (isDrawing && (activeTool === 'brush' || activeTool === 'eraser')) finishDrawing();
     if (isDrawing && (activeTool === 'select' || activeTool === 'lasso' || activeTool === 'shape')) finishShapeOrSelect();
     if (isDrawing && activeTool === 'ruler') finishRuler();
+    if (isDrawing && activeTool === 'transform') {
+       setTransformSession(prev => prev ? {...prev, action: 'idle', grabHandle: null, initialRect: {...prev.currentRect}, initialRotation: prev.rotation} : null);
+       setIsDrawing(false);
+    }
+    if (isDrawing && activeTool === 'crop') {
+        // Normalize rect (handle negative width/height from 'create')
+        setCropSession(prev => {
+            if (!prev) return prev;
+            let { x, y, width, height } = prev.currentRect;
+            if (width < 0) { x += width; width = Math.abs(width); }
+            if (height < 0) { y += height; height = Math.abs(height); }
+            return {...prev, action: 'idle', grabHandle: null, initialRect: {x, y, width, height}, currentRect: {x, y, width, height}};
+        });
+        setIsDrawing(false);
+    }
   };
 
   const handleWheel = (e: React.WheelEvent) => {
@@ -1110,6 +2039,16 @@ export const Canvas = forwardRef<CanvasRef, CanvasProps>(({
         setIsSpacebarDown(true);
         originalToolRef.current = activeTool;
         setActiveTool('pan');
+      }
+
+      // Crop confirm / cancel
+      if (activeTool === 'crop' && cropSession && cropSession.isActive) {
+          if (e.code === 'Enter') {
+              onCommitCrop(cropSession.currentRect);
+              setCropSession(null);
+          } else if (e.code === 'Escape') {
+              setCropSession(null);
+          }
       }
     };
 

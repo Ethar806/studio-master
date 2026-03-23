@@ -384,41 +384,68 @@ export function ExportDialog({ isOpen, onOpenChange, paths, layers, canvasFrame,
     }
   }, [isOpen, drawPreview]);
 
-  const handleExport = () => {
-    const contentBounds = getContentBounds();
-
-    if (contentBounds.width <= 0 || contentBounds.height <= 0) {
-        toast({ variant: 'destructive', title: "Export failed", description: "The canvas is empty." });
-        return;
-    }
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = Math.round(contentBounds.width);
-    tempCanvas.height = Math.round(contentBounds.height);
-    const tempCtx = tempCanvas.getContext('2d');
+    const handleExport = async (format: 'png' | 'jpeg') => {
+        const contentBounds = getContentBounds();
     
-    if (!tempCtx) {
-        toast({ variant: 'destructive', title: "Export failed", description: "Could not create an image canvas." });
-        return;
-    }
+        if (contentBounds.width <= 0 || contentBounds.height <= 0) {
+            toast({ variant: 'destructive', title: "Export failed", description: "The canvas is empty." });
+            return;
+        }
     
-    tempCtx.translate(-contentBounds.x, -contentBounds.y);
-
-    tempCtx.fillStyle = canvasBackgroundColor;
-    tempCtx.fillRect(contentBounds.x, contentBounds.y, contentBounds.width, contentBounds.height);
-
-    drawLayersForExport(tempCtx, layers);
-
-    const url = tempCanvas.toDataURL('image/png');
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'canvas-export.png';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    onOpenChange(false);
-  };
-
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = Math.round(contentBounds.width);
+        tempCanvas.height = Math.round(contentBounds.height);
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        if (!tempCtx) {
+            toast({ variant: 'destructive', title: "Export failed", description: "Could not create an image canvas." });
+            return;
+        }
+        
+        tempCtx.translate(-contentBounds.x, -contentBounds.y);
+    
+        tempCtx.fillStyle = canvasBackgroundColor;
+        tempCtx.fillRect(contentBounds.x, contentBounds.y, contentBounds.width, contentBounds.height);
+    
+        drawLayersForExport(tempCtx, layers);
+    
+        try {
+            const extension = format === 'jpeg' ? 'jpg' : 'png';
+            const fileName = `export-${new Date().toISOString().split('T')[0]}.${extension}`;
+            const url = tempCanvas.toDataURL(`image/${format}`, format === 'jpeg' ? 0.9 : 1.0);
+            const res = await fetch(url);
+            const blob = await res.blob();
+            
+            if ((window as any).showSaveFilePicker) {
+                const handle = await (window as any).showSaveFilePicker({
+                    suggestedName: fileName,
+                    types: [{
+                        description: `${format.toUpperCase()} Image`,
+                        accept: { [`image/${format}`]: [`.${extension}`] }
+                    }]
+                });
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                toast({ title: "Image exported successfully!" });
+            } else {
+                const blobUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = fileName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(blobUrl);
+                toast({ title: "Image exported successfully!" });
+            }
+            onOpenChange(false);
+        } catch (e: any) {
+            if (e.name !== 'AbortError') {
+                 toast({ variant: 'destructive', title: "Export failed", description: e.message });
+            }
+        }
+      };
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -433,11 +460,15 @@ export function ExportDialog({ isOpen, onOpenChange, paths, layers, canvasFrame,
                 style={{ backgroundColor: canvasBackgroundColor }}
             />
         </div>
-        <DialogFooter>
+        <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button onClick={handleExport}>
+            <Button onClick={() => handleExport('jpeg')} variant="secondary">
                 <Download className="mr-2 h-4 w-4" />
-                Export Image
+                Export JPG
+            </Button>
+            <Button onClick={() => handleExport('png')}>
+                <Download className="mr-2 h-4 w-4" />
+                Export PNG
             </Button>
         </DialogFooter>
       </DialogContent>

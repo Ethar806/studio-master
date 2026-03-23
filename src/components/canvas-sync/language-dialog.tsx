@@ -22,7 +22,16 @@ interface LanguageDialogProps {
 
 const availableLanguages: { code: Locale; name: string, flag: string }[] = [
     { code: 'en', name: 'English', flag: '🇬🇧'},
-    { code: 'es', name: 'Español', flag: '🇪🇸'},
+    { code: 'ja', name: '日本語', flag: '🇯🇵'},
+    { code: 'hi', name: 'हिन्दी', flag: '🇮🇳'},
+    { code: 'de', name: 'Deutsch', flag: '🇩🇪'},
+    { code: 'ko', name: '한국어', flag: '🇰🇷'},
+    { code: 'zh', name: '简体中文', flag: '🇨🇳'},
+    { code: 'ru', name: 'Русский', flag: '🇷🇺'},
+    { code: 'sv', name: 'Svenska', flag: '🇸🇪'},
+    { code: 'pl', name: 'Polski', flag: '🇵🇱'},
+    { code: 'fr', name: 'Français', flag: '🇫🇷'},
+    { code: 'it', name: 'Italiano', flag: '🇮🇹'}
 ];
 
 export function LanguageDialog({ isOpen, onOpenChange, setLocale }: LanguageDialogProps) {

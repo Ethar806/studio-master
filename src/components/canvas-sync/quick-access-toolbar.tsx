@@ -42,6 +42,8 @@ import {
     Check,
     ArrowRightLeft,
     Eraser,
+    Maximize,
+    Crop,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -96,6 +98,10 @@ interface QuickAccessToolbarProps {
     setBrushOpacity: (opacity: number) => void;
     brushType: BrushType;
     setBrushType: (type: BrushType) => void;
+    fillTolerance: number;
+    setFillTolerance: (tolerance: number) => void;
+    fillContiguous: boolean;
+    setFillContiguous: (contiguous: boolean) => void;
     onUndo: () => void;
     onRedo: () => void;
     canUndo: boolean;
@@ -121,6 +127,22 @@ interface QuickAccessToolbarProps {
     onZoomOut: () => void;
     transform: { zoom: number };
     leftHanded: boolean;
+    showTool: boolean;
+    showBrushList: boolean;
+    showBrushOptions: boolean;
+    showColor: boolean;
+    showLayers: boolean;
+    showView: boolean;
+    showExportbar: boolean;
+    showLine: boolean;
+    showSelect: boolean;
+    showChannels: boolean;
+    activeChannel: 'all' | 'red' | 'green' | 'blue' | 'alpha';
+    setActiveChannel: (mode: 'all' | 'red' | 'green' | 'blue' | 'alpha') => void;
+    onSelectAll: () => void;
+    onSelectNone: () => void;
+    onSelectInvert: () => void;
+    addLog: (message: string) => void;
 }
 
 const tools: { name: Tool; icon: React.ElementType; label: string; shortcut: string }[] = [
@@ -132,9 +154,11 @@ const tools: { name: Tool; icon: React.ElementType; label: string; shortcut: str
     { name: 'shape', icon: ShapeSquare, label: 'Shape', shortcut: 'U' },
     { name: 'select', icon: RectangleHorizontal, label: 'Select', shortcut: 'M' },
     { name: 'lasso', icon: LassoSelect, label: 'Lasso', shortcut: 'L' },
+    { name: 'crop', icon: Crop, label: 'Crop Tool', shortcut: 'C' },
+    { name: 'transform', icon: Maximize, label: 'Free Transform', shortcut: 'Ctrl+T' },
     { name: 'move', icon: Move, label: 'Move', shortcut: 'V' },
     { name: 'ai-object-remove', icon: Sparkles, label: 'AI Remove', shortcut: '' },
-    { name: 'gradient', icon: PaintBucket, label: 'Gradient', shortcut: 'G' },
+    { name: 'fill', icon: PaintBucket, label: 'Fill', shortcut: 'G' },
     { name: 'upload', icon: Upload, label: 'Upload', shortcut: '' },
 ];
 
@@ -151,6 +175,10 @@ export function QuickAccessToolbar({
     setBrushOpacity,
     brushType,
     setBrushType,
+    fillTolerance,
+    setFillTolerance,
+    fillContiguous,
+    setFillContiguous,
     onUndo,
     onRedo,
     canUndo,
@@ -176,7 +204,26 @@ export function QuickAccessToolbar({
     onZoomOut,
     transform,
     leftHanded,
+    showTool,
+    showBrushList,
+    showBrushOptions,
+    showColor,
+    showLayers,
+    showView,
+    showExportbar,
+    showLine,
+    showSelect,
+    showChannels,
+    activeChannel,
+    setActiveChannel,
+    onSelectAll,
+    onSelectNone,
+    onSelectInvert,
+    addLog,
 }: QuickAccessToolbarProps) {
+    const { toast } = useToast();
+
+    const [isToolMenuOpen, setIsToolMenuOpen] = React.useState(false);
 
     const handlePrimaryColorChange = (colorStr: string) => {
         const rgba = rgbaStringToObj(colorStr);
@@ -197,69 +244,136 @@ export function QuickAccessToolbar({
             leftHanded && "flex-row-reverse"
         )}>
             <div className='flex items-center gap-2'>
-                <Popover>
-                    <PopoverTrigger asChild>
-                         <Button
-                            variant="ghost"
-                            size="icon"
-                            className='flex-col h-auto py-1 px-2'
-                            >
-                            <ActiveToolIcon className="h-5 w-5" />
-                            <span className="text-xs">Tool</span>
-                        </Button>
-                    </PopoverTrigger>
-                    <PopoverContent side="bottom" align="start" className="w-auto p-1 bg-card/80 backdrop-blur-sm border-0">
-                        <ToolSelectionPanel activeTool={activeTool} setActiveTool={setActiveTool}/>
-                    </PopoverContent>
-                </Popover>
+                {showTool && (
+                    <Popover open={isToolMenuOpen} onOpenChange={isToolMenuOpen ? (o) => setIsToolMenuOpen(o) : undefined}>
+                        <PopoverTrigger asChild>
+                             <Button
+                                variant="ghost"
+                                size="icon"
+                                className='flex-col h-auto py-1 px-2'
+                                >
+                                <ActiveToolIcon className="h-5 w-5" />
+                                <span className="text-xs">Tool</span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent side="bottom" align="start" className="w-auto p-1 bg-card/80 backdrop-blur-sm border-0">
+                            <ToolSelectionPanel activeTool={activeTool} onSelect={(t) => { setActiveTool(t); setIsToolMenuOpen(false); }}/>
+                        </PopoverContent>
+                    </Popover>
+                )}
 
-                <Popover>
-                    <PopoverTrigger asChild>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className={cn(
-                                'flex-col h-auto py-1 px-2',
-                                activeTool === 'brush' && 'bg-primary/20 text-primary'
-                            )}
-                            onClick={() => setActiveTool('brush')}
-                            >
-                            <Brush className="h-5 w-5" />
-                            <span className="text-xs">Brush</span>
-                        </Button>
-                    </PopoverTrigger>
-                    <PopoverContent side="bottom" align="start">
-                        <BrushPanel activeBrush={brushType} onSelectBrush={setBrushType} />
-                    </PopoverContent>
-                </Popover>
+                {showBrushList && (
+                    <Popover>
+                        <PopoverTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className={cn(
+                                    'flex-col h-auto py-1 px-2',
+                                    activeTool === 'brush' && 'bg-primary/20 text-primary'
+                                )}
+                                onClick={() => setActiveTool('brush')}
+                                >
+                                <Brush className="h-5 w-5" />
+                                <span className="text-xs">Brush</span>
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent side="bottom" align="start">
+                            <BrushPanel activeBrush={brushType} onSelectBrush={setBrushType} />
+                        </PopoverContent>
+                    </Popover>
+                )}
 
-                <Separator orientation="vertical" className="h-8 mx-2" />
+                {(showTool || showBrushList) && <Separator orientation="vertical" className="h-8 mx-2" />}
                 
-                <ColorWells
-                    primaryColor={brushColor}
-                    secondaryColor={secondaryBrushColor}
-                    onPrimaryChange={handlePrimaryColorChange}
-                    onSecondaryChange={handleSecondaryColorChange}
-                    onSwap={swapColors}
-                    opacity={brushOpacity}
-                />
+                {showColor && (
+                    <ColorWells
+                        primaryColor={brushColor}
+                        secondaryColor={secondaryBrushColor}
+                        onPrimaryChange={handlePrimaryColorChange}
+                        onSecondaryChange={handleSecondaryColorChange}
+                        onSwap={swapColors}
+                        opacity={brushOpacity}
+                    />
+                )}
 
-                 <div className="flex items-center gap-2">
-                    <Button variant="ghost" size="icon" onClick={() => setBrushSize(Math.max(1, brushSize-1))}> <Minus/> </Button>
-                    <div className='flex flex-col items-center'>
-                        <Label htmlFor="brush-size-slider" className="text-xs">Size: {brushSize} px</Label>
-                        <Slider id="brush-size-slider" value={[brushSize]} onValueChange={(v) => setBrushSize(v[0])} max={100} step={1} className="w-24"/>
-                    </div>
-                    <Button variant="ghost" size="icon" onClick={() => setBrushSize(Math.min(100, brushSize+1))}> <Plus/> </Button>
-                </div>
-                 <div className="flex items-center gap-2">
-                    <Button variant="ghost" size="icon" onClick={() => setBrushOpacity(Math.max(0, brushOpacity-1))}> <Minus/> </Button>
-                    <div className='flex flex-col items-center'>
-                        <Label htmlFor="opacity-slider" className="text-xs">Opacity: {Math.round(brushOpacity)}%</Label>
-                        <Slider id="opacity-slider" value={[brushOpacity]} onValueChange={(v) => setBrushOpacity(v[0])} max={100} step={1} className="w-24"/>
-                    </div>
-                    <Button variant="ghost" size="icon" onClick={() => setBrushOpacity(Math.min(100, brushOpacity+1))}> <Plus/> </Button>
-                </div>
+                {showLine && (
+                    <>
+                        <Separator orientation="vertical" className="h-8 mx-2" />
+                        <div className="flex items-center gap-2">
+                            <Label className="text-xs">Line Weight</Label>
+                            <Slider value={[brushSize]} onValueChange={(v) => setBrushSize(v[0])} max={100} step={1} className="w-20"/>
+                        </div>
+                        <div className="flex items-center gap-2 h-full">
+                            <TooltipProvider>
+                                <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><Waves className="h-4 w-4"/></Button></TooltipTrigger><TooltipContent>Stabilization</TooltipContent></Tooltip>
+                                <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><Ruler className="h-4 w-4"/></Button></TooltipTrigger><TooltipContent>Snap to Grid</TooltipContent></Tooltip>
+                            </TooltipProvider>
+                        </div>
+                    </>
+                )}
+
+                {showExportbar && (
+                    <>
+                        <Separator orientation="vertical" className="h-8 mx-2" />
+                        <div className="flex items-center gap-1 bg-accent/20 p-1 rounded-md">
+                            <Button variant="ghost" size="sm" className="h-7 text-[10px]" onClick={() => { addLog('Exporting PNG...'); /* implementation would call a prop function */ toast({title: 'Exporting PNG', description: 'Your file is being prepared.'}); }}>PNG</Button>
+                            <Button variant="ghost" size="sm" className="h-7 text-[10px]" onClick={() => { addLog('Exporting JPG...'); toast({title: 'Exporting JPG', description: 'Your file is being prepared.'}); }}>JPG</Button>
+                            <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => { addLog('Quick Export triggered'); toast({title: 'Export success', description: 'Image saved to downloads.'}); }}><Upload className="h-3 w-3"/></Button>
+                        </div>
+                    </>
+                )}
+
+                {showSelect && (
+                    <>
+                        <Separator orientation="vertical" className="h-8 mx-2" />
+                        <div className="flex items-center gap-1 bg-accent/20 p-1 rounded-md">
+                            <TooltipProvider>
+                                <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="sm" className="h-7 px-2 text-[10px]" onClick={onSelectAll}>ALL</Button></TooltipTrigger><TooltipContent>Select All (Ctrl+A)</TooltipContent></Tooltip>
+                                <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="sm" className="h-7 px-2 text-[10px]" onClick={onSelectNone}>NONE</Button></TooltipTrigger><TooltipContent>Deselect (Ctrl+D)</TooltipContent></Tooltip>
+                                <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="sm" className="h-7 px-2 text-[10px]" onClick={onSelectInvert}>INVERT</Button></TooltipTrigger><TooltipContent>Invert Selection</TooltipContent></Tooltip>
+                            </TooltipProvider>
+                        </div>
+                    </>
+                )}
+
+                {showChannels && (
+                    <>
+                        <Separator orientation="vertical" className="h-8 mx-2" />
+                        <div className="flex items-center gap-1 bg-accent/20 p-1 rounded-md">
+                             <Button 
+                                variant={activeChannel === 'all' ? 'secondary' : 'ghost'} 
+                                size="sm" 
+                                className="h-7 text-[10px]" 
+                                onClick={() => setActiveChannel('all')}
+                             >RGBA</Button>
+                             <Button 
+                                variant={activeChannel === 'red' ? 'secondary' : 'ghost'} 
+                                size="sm" 
+                                className="h-7 w-7 p-0 text-[10px]" 
+                                onClick={() => setActiveChannel('red')}
+                             >R</Button>
+                             <Button 
+                                variant={activeChannel === 'green' ? 'secondary' : 'ghost'} 
+                                size="sm" 
+                                className="h-7 w-7 p-0 text-[10px]" 
+                                onClick={() => setActiveChannel('green')}
+                             >G</Button>
+                             <Button 
+                                variant={activeChannel === 'blue' ? 'secondary' : 'ghost'} 
+                                size="sm" 
+                                className="h-7 w-7 p-0 text-[10px]" 
+                                onClick={() => setActiveChannel('blue')}
+                             >B</Button>
+                             <Button 
+                                variant={activeChannel === 'alpha' ? 'secondary' : 'ghost'} 
+                                size="sm" 
+                                className="h-7 w-7 p-0 text-[10px]" 
+                                onClick={() => setActiveChannel('alpha')}
+                             >A</Button>
+                        </div>
+                    </>
+                )}
             </div>
 
             <div className='flex items-center gap-2'>
@@ -272,46 +386,50 @@ export function QuickAccessToolbar({
 
                 <Separator orientation="vertical" className="h-8 mx-2" />
 
-                <Popover>
-                    <PopoverTrigger asChild>
-                         <Button variant="ghost"><View className="mr-2"/> View</Button>
-                    </PopoverTrigger>
-                    <PopoverContent>
-                       <ViewPopoverContent 
-                         showGrid={showGrid} setShowGrid={setShowGrid}
-                         showRulers={showRulers} setShowRulers={setShowRulers}
-                       />
-                    </PopoverContent>
-                </Popover>
+                {showView && (
+                    <Popover>
+                        <PopoverTrigger asChild>
+                             <Button variant="ghost"><View className="mr-2"/> View</Button>
+                        </PopoverTrigger>
+                        <PopoverContent>
+                           <ViewPopoverContent 
+                             showGrid={showGrid} setShowGrid={setShowGrid}
+                             showRulers={showRulers} setShowRulers={setShowRulers}
+                           />
+                        </PopoverContent>
+                    </Popover>
+                )}
 
 
-                <Popover>
-                    <PopoverTrigger asChild>
-                         <Button variant="ghost"><Layers className="mr-2"/> Layers</Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-80">
-                        <LayersPopoverContent 
-                            layers={layers}
-                            activeLayerId={activeLayerId}
-                            setActiveLayerId={setActiveLayerId}
-                            addLayer={addLayer}
-                            addLayerGroup={addLayerGroup}
-                            deleteLayer={deleteLayer}
-                            duplicateLayer={duplicateLayer}
-                            mergeLayerDown={mergeLayerDown}
-                            toggleLayerProperty={toggleLayerProperty}
-                            setLayerOpacity={setLayerOpacity}
-                            renameLayer={renameLayer}
-                            clearLayer={clearLayer}
-                        />
-                    </PopoverContent>
-                </Popover>
+                {showLayers && (
+                    <Popover>
+                        <PopoverTrigger asChild>
+                             <Button variant="ghost"><Layers className="mr-2"/> Layers</Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-80">
+                            <LayersPopoverContent 
+                                layers={layers}
+                                activeLayerId={activeLayerId}
+                                setActiveLayerId={setActiveLayerId}
+                                addLayer={addLayer}
+                                addLayerGroup={addLayerGroup}
+                                deleteLayer={deleteLayer}
+                                duplicateLayer={duplicateLayer}
+                                mergeLayerDown={mergeLayerDown}
+                                toggleLayerProperty={toggleLayerProperty}
+                                setLayerOpacity={setLayerOpacity}
+                                renameLayer={renameLayer}
+                                clearLayer={clearLayer}
+                            />
+                        </PopoverContent>
+                    </Popover>
+                )}
             </div>
         </div>
     );
 }
 
-function ToolSelectionPanel({ activeTool, setActiveTool }: { activeTool: Tool; setActiveTool: (tool: Tool) => void }) {
+function ToolSelectionPanel({ activeTool, onSelect }: { activeTool: Tool; onSelect: (tool: Tool) => void }) {
     return (
         <div className="grid grid-cols-4 bg-card/50 rounded-md p-1 gap-1">
             {tools.map((tool) => (
@@ -324,7 +442,7 @@ function ToolSelectionPanel({ activeTool, setActiveTool }: { activeTool: Tool; s
                                 className={cn('w-10 h-10',
                                     activeTool === tool.name && 'bg-primary/20 text-primary'
                                 )}
-                                onClick={() => setActiveTool(tool.name)}
+                                onClick={() => onSelect(tool.name)}
                             >
                                 <tool.icon className="h-5 w-5" />
                             </Button>

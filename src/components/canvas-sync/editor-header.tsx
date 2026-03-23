@@ -37,7 +37,6 @@ import {
   Maximize,
   LassoSelect,
   RectangleHorizontal,
-  Frame,
   FlipHorizontal2,
   MinusSquare,
   Palette,
@@ -52,17 +51,21 @@ import {
   Minus,
   Plus,
   SwatchBook,
+  Thermometer,
+  Snowflake,
   ArrowRightLeft,
   Moon,
   Sun,
   Droplet,
   Languages,
+  MousePointer2,
   Hand,
   Tablet,
   PenTool,
   MousePointer,
   Touchpad,
   Disc,
+  Focus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -111,9 +114,9 @@ interface EditorHeaderProps {
   onRotateRight: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onReCenter: () => void;
   onDeselect: () => void;
   onSelectAll: () => void;
-  onSelectCanvasFrame: () => void;
   onInvertSelection: () => void;
   isSelectionInverted: boolean;
   onAddLayer: () => void;
@@ -127,9 +130,7 @@ interface EditorHeaderProps {
   canPaste: boolean;
   recentProjects: RecentProject[];
   onOpenRecent: (projectData: string) => void;
-  onOpenCanvasSizeDialog: () => void;
   onOpenCanvasBackgroundDialog: () => void;
-  onRevertToInfinite: () => void;
   onOpenUnitResolutionDialog: () => void;
   decreaseBrushSize: () => void;
   increaseBrushSize: () => void;
@@ -148,8 +149,31 @@ interface EditorHeaderProps {
   onOpenRightSideButtonDialog: () => void;
   onOpenWheelDialScrollerDialog: () => void;
   onOpenLanguageDialog: () => void;
+  onActivateTransform: () => void;
+  onActivateCrop: () => void;
+  onOpenHistoryLimitDialog: () => void;
+  showTool: boolean;
+  showBrushList: boolean;
+  showBrushOptions: boolean;
+  showColor: boolean;
+  showLayers: boolean;
+  showView: boolean;
+  showPerformance: boolean;
+  showConsole: boolean;
+  showExportbar: boolean;
+  showLine: boolean;
+  showSelect: boolean;
+  showChannels: boolean;
+  activeChannel: 'all' | 'red' | 'green' | 'blue' | 'alpha';
+  setActiveChannel: (mode: 'all' | 'red' | 'green' | 'blue' | 'alpha') => void;
+  isSimulatingPressure: boolean;
+  onToggleSimulatePressure: () => void;
+  onTogglePanel: (panel: string) => void;
+  onCloseAllPanels: () => void;
   leftHanded: boolean;
   toggleLeftHanded: () => void;
+  onOpenBrightnessContrast: () => void;
+  onOpenHueSaturation: () => void;
 }
 
 export function EditorHeader({ 
@@ -158,14 +182,12 @@ export function EditorHeader({
     showGrid, setShowGrid, showRulers, setShowRulers,
     lockView, setLockView,
     onFlipHorizontal, onFlipVertical, onRotateLeft, onRotateRight,
-    onZoomIn, onZoomOut, onDeselect, onSelectAll, onSelectCanvasFrame,
+    onZoomIn, onZoomOut, onReCenter, onDeselect, onSelectAll,
     onInvertSelection, isSelectionInverted,
     onAddLayer, onMergeLayerDown, onDuplicateLayer, onDeleteLayer,
     onCopy, onCut, onPaste, canCopy, canPaste,
     recentProjects, onOpenRecent,
-    onOpenCanvasSizeDialog,
     onOpenCanvasBackgroundDialog,
-    onRevertToInfinite,
     onOpenUnitResolutionDialog,
     decreaseBrushSize,
     increaseBrushSize,
@@ -180,21 +202,26 @@ export function EditorHeader({
     onOpenWindowOpacityDialog,
     onOpenPenMappingDialog,
     onOpenPenPressureDialog,
-    onOpenMultiTouchDialog,
-    onOpenRightSideButtonDialog,
-    onOpenWheelDialScrollerDialog,
-    onOpenLanguageDialog,
+    onOpenMultiTouchDialog, onOpenRightSideButtonDialog, onOpenWheelDialScrollerDialog,
+    onOpenLanguageDialog, onActivateTransform, onActivateCrop,
+    onOpenHistoryLimitDialog,
+    showTool, showBrushList, showBrushOptions, showColor, showLayers, showView, showPerformance,
+    showConsole, showExportbar,    showLine,
+    showSelect,
+    showChannels,
+    activeChannel,
+    setActiveChannel,
+    onTogglePanel,
+ onCloseAllPanels,
     leftHanded,
     toggleLeftHanded,
+    onOpenBrightnessContrast,
+    onOpenHueSaturation,
+    isSimulatingPressure,
+    onToggleSimulatePressure,
 }: EditorHeaderProps) {
   const [autoSave, setAutoSave] = React.useState(true);
   const [fullScreen, setFullScreen] = React.useState(false);
-  
-  const [showTool, setShowTool] = React.useState(true);
-  const [showBrushList, setShowBrushList] = React.useState(true);
-  const [showColor, setShowColor] = React.useState(true);
-  const [showLayers, setShowLayers] = React.useState(true);
-  const [showView, setShowView] = React.useState(true);
 
 
   const { toast } = useToast();
@@ -242,12 +269,11 @@ export function EditorHeader({
   }, []);
 
   return (
-    <header className="flex h-14 items-center justify-between border-b bg-card px-4 shrink-0">
-      <div className="flex items-center gap-1">
-        <div className="flex items-center gap-2 mr-4">
-          <Logo />
-        </div>
-        <div className="flex items-center gap-1">
+    <header className="flex h-14 items-center border-b bg-card px-4 shrink-0">
+      <div className="flex items-center gap-2 mr-4">
+        <Logo />
+      </div>
+      <div className={`flex items-center gap-1 ${leftHanded ? 'ml-auto' : ''}`}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm">
@@ -366,8 +392,8 @@ export function EditorHeader({
                   <span>{t('edit.adjust')}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  <DropdownMenuItem onClick={notImplemented}>{t('edit.brightnessContrast')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={notImplemented}>{t('edit.hueSaturation')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={onOpenBrightnessContrast}>{t('edit.brightnessContrast')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={onOpenHueSaturation}>{t('edit.hueSaturation')}</DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
                <DropdownMenuSub>
@@ -376,8 +402,8 @@ export function EditorHeader({
                   <span>{t('edit.transform')}</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  <DropdownMenuItem onClick={notImplemented}>{t('edit.scale')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={notImplemented}>{t('edit.rotate')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={onActivateTransform}>{t('edit.scale')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={onActivateTransform}>{t('edit.rotate')}</DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSeparator />
@@ -391,7 +417,7 @@ export function EditorHeader({
                 <span>{t('edit.clear')}</span>
                 <DropdownMenuShortcut>Delete</DropdownMenuShortcut>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={notImplemented}>
+              <DropdownMenuItem onClick={onActivateCrop}>
                 <Crop className="mr-2" />
                 <span>{t('edit.crop')}</span>
                 <DropdownMenuShortcut>Ctrl+Delete</DropdownMenuShortcut>
@@ -415,7 +441,7 @@ export function EditorHeader({
                 <span>{t('view.showRulers')}</span>
                 <DropdownMenuShortcut>Ctrl+R</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
+              <DropdownMenuCheckboxItem checked={showChannels} onCheckedChange={() => onTogglePanel('channels')}>
                 <Eye className="mr-2" />
                 <span>{t('view.showChannel')}</span>
                 <DropdownMenuShortcut>Ctrl+P</DropdownMenuShortcut>
@@ -445,6 +471,11 @@ export function EditorHeader({
                 <ZoomOut className="mr-2" />
                 <span>{t('view.zoomOut')}</span>
                 <DropdownMenuShortcut>Ctrl+-</DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onReCenter}>
+                <Focus className="mr-2" />
+                <span>{t('view.recenter')}</span>
+                <DropdownMenuShortcut>Ctrl+0</DropdownMenuShortcut>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={onRotateLeft}>
                 <RotateCcw className="mr-2" />
@@ -479,10 +510,6 @@ export function EditorHeader({
                 <span>{t('select.selectAllLasso')}</span>
                 <DropdownMenuShortcut>Shift+Ctrl+A</DropdownMenuShortcut>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={onSelectCanvasFrame}>
-                <Frame className="mr-2" />
-                <span>{t('select.selectCanvasFrame')}</span>
-              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuCheckboxItem checked={isSelectionInverted} onCheckedChange={() => onInvertSelection()}>
                 <FlipHorizontal2 className="mr-2" />
@@ -504,14 +531,6 @@ export function EditorHeader({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-64">
-              <DropdownMenuItem onClick={onOpenCanvasSizeDialog}>
-                <Frame className="mr-2" />
-                <span>{t('canvas.frameSize')}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onRevertToInfinite}>
-                <InfinityIcon className="mr-2" />
-                <span>{t('canvas.useInfinite')}</span>
-              </DropdownMenuItem>
               <DropdownMenuItem onClick={onOpenCanvasBackgroundDialog}>
                 <Palette className="mr-2" />
                 <span>{t('canvas.background')}</span>
@@ -602,33 +621,12 @@ export function EditorHeader({
                 <span>{t('paint.swapColors')}</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => adjustColorLightness(-5)}>
-                <Moon className="mr-2" />
-                <span>{t('paint.darker')}</span>
-                <DropdownMenuShortcut>Alt+Z</DropdownMenuShortcut>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => adjustColorLightness(5)}>
-                <Sun className="mr-2" />
-                <span>{t('paint.brighter')}</span>
-                <DropdownMenuShortcut>Alt+X</DropdownMenuShortcut>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => adjustColorSaturation(-5)}>
-                <Paintbrush className="mr-2" />
-                <span>{t('paint.grayer')}</span>
-                <DropdownMenuShortcut>Alt+A</DropdownMenuShortcut>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => adjustColorSaturation(5)}>
-                <Droplet className="mr-2" />
-                <span>{t('paint.purer')}</span>
-                <DropdownMenuShortcut>Alt+S</DropdownMenuShortcut>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => adjustColorHue(-5)}>
-                <RefreshCcw className="mr-2" />
+              <DropdownMenuItem onClick={() => adjustColorHue(-15)}>
+                <Snowflake className="mr-2" />
                 <span>{t('paint.cooler')}</span>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => adjustColorHue(5)}>
-                <RefreshCcw className="mr-2" />
+              <DropdownMenuItem onClick={() => adjustColorHue(15)}>
+                <Thermometer className="mr-2" />
                 <span>{t('paint.warmer')}</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -647,7 +645,7 @@ export function EditorHeader({
               <DropdownMenuItem onClick={onClearHistory}>
                 {t('history.clearHistory')}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={notImplemented}>
+              <DropdownMenuItem onClick={onOpenHistoryLimitDialog}>
                 {t('history.setHistoryLimit')}
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -660,61 +658,48 @@ export function EditorHeader({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-64">
               <DropdownMenuLabel>{t('panel.showHide')}</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
+              <DropdownMenuCheckboxItem checked={showConsole} onCheckedChange={() => onTogglePanel('console')}>
                 {t('panel.showConsole')}
                 <DropdownMenuShortcut>Ctrl+`</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem checked={showTool} onCheckedChange={() => {setShowTool(c => !c); showToastForPanel('Tool', t('panel.toolTip'));}}>
+              <DropdownMenuCheckboxItem checked={showTool} onCheckedChange={() => onTogglePanel('tool')}>
                 {t('panel.showTool')}
                 <DropdownMenuShortcut>F2</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
+              <DropdownMenuCheckboxItem checked={showLine} onCheckedChange={() => onTogglePanel('line')}>
                 {t('panel.showLine')}
                 <DropdownMenuShortcut>F3</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem checked={showBrushList} onCheckedChange={() => {setShowBrushList(c => !c); showToastForPanel('Brush', t('panel.brushTip'));}}>
+              <DropdownMenuCheckboxItem checked={showBrushList} onCheckedChange={() => onTogglePanel('brushList')}>
                 {t('panel.showBrushList')}
                 <DropdownMenuShortcut>F4</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem onCheckedChange={() => showToastForPanel('Brush Options', t('panel.brushOptionsTip'))}>
+              <DropdownMenuCheckboxItem checked={showBrushOptions} onCheckedChange={() => onTogglePanel('brushOptions')}>
                 {t('panel.showBrushOptions')}
                 <DropdownMenuShortcut>F5</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem checked={showColor} onCheckedChange={() => {setShowColor(c => !c); showToastForPanel('Color', t('panel.colorTip'));}}>
+              <DropdownMenuCheckboxItem checked={showColor} onCheckedChange={() => onTogglePanel('color')}>
                 {t('panel.showColor')}
                 <DropdownMenuShortcut>F6</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem checked={showLayers} onCheckedChange={() => {setShowLayers(c => !c); showToastForPanel('Layers', t('panel.layersTip'));}}>
+              <DropdownMenuCheckboxItem checked={showLayers} onCheckedChange={() => onTogglePanel('layers')}>
                 {t('panel.showLayers')}
                 <DropdownMenuShortcut>F7</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
+              <DropdownMenuCheckboxItem checked={showSelect} onCheckedChange={() => onTogglePanel('select')}>
                 {t('panel.showSelect')}
               </DropdownMenuCheckboxItem>
-               <DropdownMenuCheckboxItem checked={showView} onCheckedChange={() => {setShowView(c => !c); showToastForPanel('View', t('panel.viewTip'));}}>
+               <DropdownMenuCheckboxItem checked={showView} onCheckedChange={() => onTogglePanel('view')}>
                 {t('panel.showView')}
               </DropdownMenuCheckboxItem>
-               <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
-                {t('panel.showSidebar')}
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
-                {t('panel.showNumpad')}
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
+               <DropdownMenuCheckboxItem checked={showExportbar} onCheckedChange={() => onTogglePanel('exportbar')}>
                 {t('panel.showExportbar')}
               </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem onCheckedChange={() => notImplemented()}>
+              <DropdownMenuCheckboxItem checked={showPerformance} onCheckedChange={() => onTogglePanel('performance')}>
                 {t('panel.showPerformance')}
               </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => {
-                  setShowTool(false);
-                  setShowBrushList(false);
-                  setShowColor(false);
-                  setShowLayers(false);
-                  setShowView(false);
-                  showToastForPanel(t('panel.allPanels'), t('panel.allPanelsTip'));
-              }}>{t('panel.closeAll')}</DropdownMenuItem>
+              <DropdownMenuItem onClick={onCloseAllPanels}>{t('panel.closeAll')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <DropdownMenu>
@@ -755,18 +740,18 @@ export function EditorHeader({
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuCheckboxItem checked={leftHanded} onCheckedChange={toggleLeftHanded}>
-                <Hand className="mr-2" />
-                <span>{t('settings.leftHanded')}</span>
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem checked={leftHanded} onCheckedChange={toggleLeftHanded}>
                 <FlipHorizontal className="mr-2" />
                 <span>{t('settings.flipToolbar')}</span>
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem checked={isSimulatingPressure} onCheckedChange={onToggleSimulatePressure}>
+                <MousePointer2 className="mr-2" />
+                <span>{t('settings.simulatePressure')}</span>
+                <DropdownMenuShortcut>Ctrl+M</DropdownMenuShortcut>
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-      </div>
-      <div className="flex items-center gap-4">
+      <div className={`flex items-center gap-4 ${leftHanded ? 'ml-4' : 'ml-auto'}`}>
         <Button variant="ghost" size="icon" onClick={handleFullScreen} aria-label={t('view.toggleFullScreen')}>
           <Maximize />
         </Button>

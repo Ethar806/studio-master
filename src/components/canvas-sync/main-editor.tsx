@@ -29,6 +29,7 @@ import { MultiTouchDialog } from './multi-touch-dialog';
 import { RightSideButtonDialog } from './right-side-button-dialog';
 import { WheelDialScrollerDialog } from './wheel-dial-scroller-dialog';
 import { LanguageDialog } from './language-dialog';
+import { HistoryLimitDialog } from './history-limit-dialog';
 import { type Locale } from '@/lib/i18n';
 
 
@@ -45,7 +46,10 @@ export type Tool =
   | 'lasso'
   | 'gradient'
   | 'upload'
-  | 'redo';
+  | 'redo'
+  | 'crop'
+  | 'transform'
+  | 'fill';
 
 export interface Layer {
   id: number;
@@ -58,8 +62,11 @@ export interface Layer {
   // This will hold image data for features like cut/paste
   pastedImage: {
     imageData: HTMLCanvasElement;
+    width?: number;
+    height?: number;
+    rotation?: number;
     x: number;
-y: number;
+    y: number;
   }[];
   type: 'layer' | 'group';
   layers?: Layer[]; // For groups
@@ -187,23 +194,31 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
   const [isPenPressureDialogOpen, setIsPenPressureDialogOpen] = React.useState(false);
   const [isMultiTouchDialogOpen, setIsMultiTouchDialogOpen] = React.useState(false);
   const [isRightSideButtonDialogOpen, setIsRightSideButtonDialogOpen] = React.useState(false);
-  const [isWheelDialScrollerDialogOpen, setIsWheelDialScrollerDialogOpen] = React.useState(false);
   const [isLanguageDialogOpen, setIsLanguageDialogOpen] = React.useState(false);
+  const [isWheelDialScrollerDialogOpen, setIsWheelDialScrollerDialogOpen] = React.useState(false);
+  const [isHistoryLimitDialogOpen, setIsHistoryLimitDialogOpen] = React.useState(false);
+  
+  type AdjustmentType = 'brightness' | 'hue' | null;
+  const [activeAdjustment, setActiveAdjustment] = React.useState<AdjustmentType>(null);
+  const [isAdjustmentsDialogOpen, setIsAdjustmentsDialogOpen] = React.useState(false);
 
   const [brushSize, setBrushSize] = React.useState(36);
   const [brushColor, setBrushColor] = React.useState('#000000');
   const [secondaryBrushColor, setSecondaryBrushColor] = React.useState('#ffffff');
   const [brushOpacity, setBrushOpacity] = React.useState(100);
   const [brushType, setBrushType] = React.useState<BrushType>('round');
+  const [fillTolerance, setFillTolerance] = React.useState(32);
+  const [fillContiguous, setFillContiguous] = React.useState(true);
 
   const [paths, setPaths] = React.useState<Path[]>([]);
-  const [undonePaths, setUndonePaths] = React.useState<Path[]>([]);
   const [isClearAlertOpen, setIsClearAlertOpen] = React.useState(false);
   const [isClearHistoryAlertOpen, setIsClearHistoryAlertOpen] = React.useState(false);
   const { toast } = useToast();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const imageInputRef = React.useRef<HTMLInputElement>(null);
   
+  const [isSimulatingPressure, setIsSimulatingPressure] = React.useState(false);
+
   const canvasRef = React.useRef<CanvasRef>(null);
 
   // Clipboard
@@ -220,6 +235,30 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
   const [layers, setLayers] = React.useState<Layer[]>(defaultLayers);
   const [activeLayerId, setActiveLayerId] = React.useState(2);
   const [nextLayerId, setNextLayerId] = React.useState(3);
+
+  const [history, setHistory] = React.useState<{paths: Path[], layers: Layer[], activeLayerId: number}[]>([]);
+  const [historyIndex, setHistoryIndex] = React.useState(-1);
+  const [historyLimit, setHistoryLimit] = React.useState(50);
+  const isUndoRedoAction = React.useRef(false);
+  const lastStateRef = React.useRef<{paths: Path[], layers: Layer[], activeLayerId: number}>({ paths: [], layers: defaultLayers, activeLayerId: 2 });
+
+  React.useEffect(() => {
+    if (isUndoRedoAction.current) {
+        isUndoRedoAction.current = false;
+        lastStateRef.current = { paths, layers, activeLayerId };
+        return;
+    }
+    
+    if (paths === lastStateRef.current.paths && layers === lastStateRef.current.layers && activeLayerId === lastStateRef.current.activeLayerId) {
+        return;
+    }
+
+    const newHistory = [...history.slice(0, historyIndex + 1), { paths, layers, activeLayerId }];
+    if (newHistory.length > historyLimit) { newHistory.shift(); }
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+    lastStateRef.current = { paths, layers, activeLayerId };
+  }, [paths, layers, historyIndex, historyLimit, activeLayerId]);
   
   // View options
   const [showGrid, setShowGrid] = React.useState(false);
@@ -246,6 +285,61 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
   const [pressureCurve, setPressureCurve] = React.useState<{x: number, y: number}[]>([{ x: 0, y: 0 }, { x: 1, y: 1 }]);
   const [forceProportions, setForceProportions] = React.useState<boolean>(false);
 
+  // Global Panel Visibility States
+  const [showTool, setShowTool] = React.useState(true);
+  const [showBrushList, setShowBrushList] = React.useState(true);
+  const [showBrushOptions, setShowBrushOptions] = React.useState(true);
+  const [showColor, setShowColor] = React.useState(true);
+  const [showLayers, setShowLayers] = React.useState(true);
+  const [showView, setShowView] = React.useState(true);
+  const [showPerformance, setShowPerformance] = React.useState(false);
+  const [showConsole, setShowConsole] = React.useState(false);
+  const [showExportbar, setShowExportbar] = React.useState(false);
+  const [showLine, setShowLine] = React.useState(false);
+  const [showSelect, setShowSelect] = React.useState(false);
+  const [showChannels, setShowChannels] = React.useState(false);
+  const [activeChannel, setActiveChannel] = React.useState<'all' | 'red' | 'green' | 'blue' | 'alpha'>('all');
+
+  const [actionLog, setActionLog] = React.useState<{id: number, message: string, time: string}[]>([]);
+  const logIdCounter = React.useRef(0);
+
+  const addLog = React.useCallback((message: string) => {
+    const time = new Date().toLocaleTimeString();
+    setActionLog(prev => [{ id: logIdCounter.current++, message, time }, ...prev].slice(0, 50));
+  }, []);
+
+  const togglePanel = (panel: string) => {
+    switch (panel) {
+      case 'tool': setShowTool(v => !v); break;
+      case 'brushList': setShowBrushList(v => !v); break;
+      case 'brushOptions': setShowBrushOptions(v => !v); break;
+      case 'color': setShowColor(v => !v); break;
+      case 'layers': setShowLayers(v => !v); break;
+      case 'view': setShowView(v => !v); break;
+      case 'performance': setShowPerformance(v => !v); break;
+      case 'console': setShowConsole(v => !v); break;
+      case 'exportbar': setShowExportbar(v => !v); break;
+      case 'line': setShowLine(v => !v); break;
+      case 'select': setShowSelect(v => !v); break;
+      case 'channels': setShowChannels(v => !v); break;
+    }
+  };
+
+  const closeAllPanels = () => {
+    setShowTool(false);
+    setShowBrushList(false);
+    setShowBrushOptions(false);
+    setShowColor(false);
+    setShowLayers(false);
+    setShowView(false);
+    setShowPerformance(false);
+    setShowConsole(false);
+    setShowExportbar(false);
+    setShowLine(false);
+    setShowSelect(false);
+    setShowChannels(false);
+  };
+
 
   // Load recent projects from localStorage on mount
   React.useEffect(() => {
@@ -260,32 +354,69 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
   }, []);
 
   const handleToolSelect = (tool: Tool) => {
+    if ((tool === 'transform' || tool === 'move') && selection && canvasRef.current) {
+      const imageData = canvasRef.current.getSelectionImageData();
+      if (imageData) {
+        canvasRef.current.clearSelection();
+        const newLayerData: Omit<Layer, 'id' | 'parentId' | 'locked' | 'lockedAlpha' | 'clippingMask'> = {
+          name: `Floated Selection ${nextLayerId}`,
+          visible: true,
+          opacity: 100,
+          pastedImage: [],
+          type: 'layer',
+        };
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = imageData.width;
+        tempCanvas.height = imageData.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx?.putImageData(imageData, 0, 0);
+        newLayerData.pastedImage.push({
+          imageData: tempCanvas,
+          x: selection.x,
+          y: selection.y,
+        });
+        addLayer(newLayerData);
+      }
+    }
+
     if (tool === 'ai-object-remove') {
       setIsObjectRemovalOpen(true);
     } else {
       setActiveTool(tool);
     }
+    addLog(`Tool changed to ${tool}`);
   };
 
   const handleUndo = React.useCallback(() => {
-    if (paths.length > 0) {
-      const lastPath = paths[paths.length - 1];
-      setUndonePaths((prev) => [...prev, lastPath]);
-      setPaths((prev) => prev.slice(0, -1));
+    if (historyIndex > 0) {
+      isUndoRedoAction.current = true;
+      const prevIndex = historyIndex - 1;
+      const state = history[prevIndex];
+      setPaths(state.paths);
+      setLayers(state.layers);
+      setActiveLayerId(state.activeLayerId);
+      setHistoryIndex(prevIndex);
+      addLog('Undo performed');
     }
-  }, [paths]);
+  }, [history, historyIndex, addLog]);
 
   const handleRedo = React.useCallback(() => {
-    if (undonePaths.length > 0) {
-      const lastUndonePath = undonePaths[undonePaths.length - 1];
-      setPaths((prev) => [...prev, lastUndonePath]);
-      setUndonePaths((prev) => prev.slice(0, -1));
+    if (historyIndex < history.length - 1) {
+      isUndoRedoAction.current = true;
+      const nextIndex = historyIndex + 1;
+      const state = history[nextIndex];
+      setPaths(state.paths);
+      setLayers(state.layers);
+      setActiveLayerId(state.activeLayerId);
+      setHistoryIndex(nextIndex);
+      addLog('Redo performed');
     }
-  }, [undonePaths]);
+  }, [history, historyIndex, addLog]);
 
   const clearCanvas = () => {
     setPaths([]);
-    setUndonePaths([]);
+    setHistory([]);
+    setHistoryIndex(-1);
     setLayers(defaultLayers);
     setActiveLayerId(2);
     setNextLayerId(3);
@@ -338,7 +469,6 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
      const serializableLayers = serializeLayers(layers);
      const projectState = {
         paths,
-        undonePaths,
         layers: serializableLayers,
         activeLayerId,
         nextLayerId,
@@ -416,8 +546,10 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
           const data = JSON.parse(projectData);
           if (data.paths && data.layers) {
             deserializeLayers(data.layers).then(loadedLayers => {
+                isUndoRedoAction.current = true; // Prevent history tracking for this load
+                setHistory([]);
+                setHistoryIndex(-1);
                 setPaths(data.paths);
-                setUndonePaths(data.undonePaths || []);
                 setLayers(loadedLayers);
                 setActiveLayerId(data.activeLayerId || data.layers[data.layers.length-1]?.id || 1);
                 setNextLayerId(data.nextLayerId || Math.max(...getAllLayerIds(loadedLayers)) + 1);
@@ -553,6 +685,8 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
             strokeWidth: 1, // N/A
             layerId: activeLayerId,
             shape: 'rectangle',
+            clipRect: null,
+            isSelectionInverted: isSelectionInverted,
         };
         setPaths(prev => [...prev, fillPath]);
         toast({ title: 'Layer filled' });
@@ -720,13 +854,150 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
   };
 
   const duplicateLayer = (id: number) => {
-    // This is complex with nesting, will implement later.
-    toast({ title: "Duplicate layer not implemented yet for folders." });
+    const layerToDuplicate = findLayer(layers, id);
+    if (!layerToDuplicate) return;
+
+    let currentNextId = nextLayerId;
+    const newPaths: Path[] = [];
+    
+    const cloneCanvas = (oldCanvas: HTMLCanvasElement) => {
+      const newCanvas = document.createElement('canvas');
+      newCanvas.width = oldCanvas.width;
+      newCanvas.height = oldCanvas.height;
+      const ctx = newCanvas.getContext('2d');
+      ctx?.drawImage(oldCanvas, 0, 0);
+      return newCanvas;
+    };
+
+    const duplicateRecursive = (l: Layer, parentId: number | null): Layer => {
+        const newId = currentNextId++;
+        
+        // Duplicate paths for this layer
+        const layerPaths = paths.filter(p => p.layerId === l.id);
+        layerPaths.forEach(p => {
+            newPaths.push({ ...p, layerId: newId });
+        });
+
+        const newLayer: Layer = {
+            ...l,
+            id: newId,
+            name: `${l.name} copy`,
+            parentId: parentId,
+            pastedImage: l.pastedImage.map(img => ({
+                ...img,
+                imageData: cloneCanvas(img.imageData)
+            })),
+        };
+
+        if (l.type === 'group' && l.layers) {
+            newLayer.layers = l.layers.map(child => duplicateRecursive(child, newId));
+        }
+
+        return newLayer;
+    };
+
+    const newLayer = duplicateRecursive(layerToDuplicate, layerToDuplicate.parentId || null);
+    
+    setNextLayerId(currentNextId);
+    setPaths(prev => [...prev, ...newPaths]);
+
+    setLayers(currentLayers => {
+        const insertDuplicate = (list: Layer[]): Layer[] => {
+            const index = list.findIndex(l => l.id === id);
+            if (index !== -1) {
+                const newList = [...list];
+                newList.splice(index, 0, newLayer); // Insert ABOVE (index 0 is top)
+                return newList;
+            }
+            return list.map(l => {
+                if (l.type === 'group' && l.layers) {
+                    return { ...l, layers: insertDuplicate(l.layers) };
+                }
+                return l;
+            });
+        };
+        return insertDuplicate(currentLayers);
+    });
+
+    setActiveLayerId(newLayer.id);
+    addLog(`Layer '${layerToDuplicate.name}' duplicated`);
   }
 
   const mergeLayerDown = (id: number) => {
-    // This is complex with nesting, will implement later.
-     toast({ title: "Merge layer down not implemented yet for folders." });
+    const layerA = findLayer(layers, id);
+    if (!layerA) return;
+
+    let parent: Layer | null = null;
+    let indexA = -1;
+
+    const findParentAndIndex = (list: Layer[]): boolean => {
+        const idx = list.findIndex(l => l.id === id);
+        if (idx !== -1) {
+            indexA = idx;
+            return true;
+        }
+        for (const l of list) {
+            if (l.type === 'group' && l.layers) {
+                if (findParentAndIndex(l.layers)) {
+                    if (indexA !== -1 && !parent) parent = l;
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    findParentAndIndex(layers);
+    const siblingList = (parent && parent.type === 'group' && parent.layers) ? parent.layers : layers;
+
+    if (indexA === -1 || indexA >= siblingList.length - 1) {
+        toast({ title: "No layer below to merge with." });
+        return;
+    }
+
+    const layerB = siblingList[indexA + 1];
+
+    const rasterA = canvasRef.current?.getLayerRaster(id);
+    if (!rasterA) {
+        // If layer is truly empty, we just delete it
+        deleteLayer(id);
+        addLog(`Layer '${layerA.name}' was empty and has been removed`);
+        return;
+    }
+
+    const newImageForB = {
+        imageData: rasterA.imageData,
+        x: rasterA.x,
+        y: rasterA.y
+    };
+
+    setLayers(currentLayers => {
+        const updateLayers = (list: Layer[]): Layer[] => {
+            const idx = list.findIndex(l => l.id === id);
+            if (idx !== -1) {
+                const newList = [...list];
+                const targetB = { ...newList[idx + 1] };
+                targetB.pastedImage = [...targetB.pastedImage, newImageForB];
+                
+                newList[idx + 1] = targetB;
+                newList.splice(idx, 1);
+                return newList;
+            }
+            return list.map(l => {
+                if (l.type === 'group' && l.layers) {
+                    return { ...l, layers: updateLayers(l.layers) };
+                }
+                return l;
+            });
+        };
+        return updateLayers(currentLayers);
+    });
+
+    const allIdsInA = getAllLayerIds([layerA]);
+    setPaths(prev => prev.filter(p => !allIdsInA.includes(p.layerId)));
+    
+    setActiveLayerId(layerB.id);
+    addLog(`Layer '${layerA.name}' merged down into '${layerB.name}'`);
   }
 
   const toggleLayerProperty = (id: number, property: keyof Layer) => {
@@ -958,9 +1229,11 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
 
   const adjustColor = (prop: 'h' | 's' | 'l', amount: number) => {
     let hsl = hexToHsl(brushColor);
-    hsl[prop] = Math.max(0, Math.min(prop === 'h' ? 360 : 100, hsl[prop] + amount));
-    if (prop === 'h' && hsl[prop] >= 360) hsl[prop] -= 360;
-    if (prop === 'h' && hsl[prop] < 0) hsl[prop] += 360;
+    if (prop === 'h') {
+      hsl.h = ((hsl.h + amount) % 360 + 360) % 360;
+    } else {
+      hsl[prop] = Math.max(0, Math.min(100, hsl[prop] + amount));
+    }
     setBrushColor(hslToHex(hsl.h, hsl.s, hsl.l));
   }
   const adjustColorLightness = (amount: number) => adjustColor('l', amount);
@@ -969,19 +1242,34 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
 
   // History menu handlers
   const handleClearHistory = () => {
-    if (undonePaths.length > 0) {
+    if (history.length > 1) { // If there's more than the initial state
         setIsClearHistoryAlertOpen(true);
     } else {
         toast({title: "History is already clear", description: "There are no redo states to clear."});
     }
   }
   const confirmClearHistory = () => {
-    setUndonePaths([]);
+    setHistory([]);
+    setHistoryIndex(-1);
     toast({title: "History Cleared", description: "The redo history has been cleared."});
     setIsClearHistoryAlertOpen(false);
   }
   const handleNewFromHistory = () => {
+    toast({ title: "Creating new project from current state..." });
     handleSaveAs();
+  }
+
+  const handleActivateCrop = () => setActiveTool('crop');
+  const handleActivateTransform = () => setActiveTool('transform');
+  const handleReCenter = () => setTransform(prev => ({ ...prev, x: 0, y: 0 }));
+  
+  const handleOpenBrightnessContrast = () => {
+    setActiveAdjustment('brightness');
+    setIsAdjustmentsDialogOpen(true);
+  }
+  const handleOpenHueSaturation = () => {
+    setActiveAdjustment('hue');
+    setIsAdjustmentsDialogOpen(true);
   }
 
 
@@ -1018,6 +1306,18 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
         setActiveTool('pipette'); 
       }
       if (key === 'r') { e.preventDefault(); setActiveTool('ruler'); }
+      if (key === 'v') { e.preventDefault(); setActiveTool('move'); }
+      if (key === 'c' && !isCtrlOrMeta) { e.preventDefault(); setActiveTool('crop'); }
+      if (key === 'p' && isCtrlOrMeta) { e.preventDefault(); togglePanel('channels'); }
+
+      // Panel shortcuts
+      if (key === 'f2') { e.preventDefault(); togglePanel('tool'); }
+      if (key === 'f3') { e.preventDefault(); togglePanel('line'); }
+      if (key === 'f4') { e.preventDefault(); togglePanel('brushList'); }
+      if (key === 'f5') { e.preventDefault(); togglePanel('brushOptions'); }
+      if (key === 'f6') { e.preventDefault(); togglePanel('color'); }
+      if (key === 'f7') { e.preventDefault(); togglePanel('layers'); }
+      if (key === 'f8') { e.preventDefault(); togglePanel('select'); }
       
       // Brush size
       if (key === '[') decreaseBrushSize();
@@ -1114,6 +1414,7 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
     handleOpen,
     handleUndo,
     handleRedo,
+    togglePanel,
   ]);
 
 
@@ -1123,8 +1424,8 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
         <EditorHeader
           onUndo={handleUndo}
           onRedo={handleRedo}
-          canUndo={paths.length > 0}
-          canRedo={undonePaths.length > 0}
+          canUndo={historyIndex > 0}
+          canRedo={historyIndex < history.length - 1}
           onNew={handleNew}
           onOpen={handleOpen}
           onSave={handleSave}
@@ -1146,8 +1447,12 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
           onZoomIn={handleZoomIn}
           onZoomOut={handleZoomOut}
           onDeselect={handleDeselect}
+          onReCenter={handleReCenter}
+          onActivateCrop={handleActivateCrop}
+          onActivateTransform={handleActivateTransform}
+          onOpenBrightnessContrast={handleOpenBrightnessContrast}
+          onOpenHueSaturation={handleOpenHueSaturation}
           onSelectAll={handleSelectAll}
-          onSelectCanvasFrame={handleSelectCanvasFrame}
           onInvertSelection={handleInvertSelection}
           isSelectionInverted={isSelectionInverted}
           onAddLayer={addLayer}
@@ -1161,9 +1466,7 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
           canPaste={!!clipboard}
           recentProjects={recentProjects}
           onOpenRecent={loadProjectData}
-          onOpenCanvasSizeDialog={() => setIsCanvasSizeDialogOpen(true)}
           onOpenCanvasBackgroundDialog={() => setIsCanvasBackgroundDialogOpen(true)}
-          onRevertToInfinite={handleRevertToInfinite}
           onOpenUnitResolutionDialog={() => setIsUnitResolutionDialogOpen(true)}
           decreaseBrushSize={decreaseBrushSize}
           increaseBrushSize={increaseBrushSize}
@@ -1182,8 +1485,27 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
           onOpenRightSideButtonDialog={() => setIsRightSideButtonDialogOpen(true)}
           onOpenWheelDialScrollerDialog={() => setIsWheelDialScrollerDialogOpen(true)}
           onOpenLanguageDialog={() => setIsLanguageDialogOpen(true)}
+          onOpenHistoryLimitDialog={() => setIsHistoryLimitDialogOpen(true)}
+          showTool={showTool}
+          showBrushList={showBrushList}
+          showBrushOptions={showBrushOptions}
+          showColor={showColor}
+          showLayers={showLayers}
+          showView={showView}
+          showPerformance={showPerformance}
+          showConsole={showConsole}
+          showExportbar={showExportbar}
+          showLine={showLine}
+          showSelect={showSelect}
+          showChannels={showChannels}
+          activeChannel={activeChannel}
+          setActiveChannel={setActiveChannel}
+          onTogglePanel={togglePanel}
+          onCloseAllPanels={closeAllPanels}
           leftHanded={leftHanded}
           toggleLeftHanded={() => setLeftHanded(v => !v)}
+          isSimulatingPressure={isSimulatingPressure}
+          onToggleSimulatePressure={() => setIsSimulatingPressure(!isSimulatingPressure)}
         />
         <QuickAccessToolbar
             activeTool={activeTool}
@@ -1198,10 +1520,14 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
             setBrushOpacity={setBrushOpacity}
             brushType={brushType}
             setBrushType={setBrushType}
+            fillTolerance={fillTolerance}
+            setFillTolerance={setFillTolerance}
+            fillContiguous={fillContiguous}
+            setFillContiguous={setFillContiguous}
             onUndo={handleUndo}
             onRedo={handleRedo}
-            canUndo={paths.length > 0}
-            canRedo={undonePaths.length > 0}
+            canUndo={historyIndex > 0}
+            canRedo={historyIndex < history.length - 1}
             swapColors={swapColors}
             layers={layers}
             activeLayerId={activeLayerId}
@@ -1223,6 +1549,22 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
             onZoomOut={handleZoomOut}
             transform={transform}
             leftHanded={leftHanded}
+            showTool={showTool}
+            showBrushList={showBrushList}
+            showBrushOptions={showBrushOptions}
+            showColor={showColor}
+            showLayers={showLayers}
+            showView={showView}
+            showExportbar={showExportbar}
+            showLine={showLine}
+            showSelect={showSelect}
+            showChannels={showChannels}
+            activeChannel={activeChannel}
+            setActiveChannel={setActiveChannel}
+            onSelectAll={handleSelectAll}
+            onSelectNone={handleDeselect}
+            onSelectInvert={handleInvertSelection}
+            addLog={addLog}
         />
         <main className="flex-1 flex items-stretch justify-stretch bg-stone-200 dark:bg-zinc-900 transition-all duration-300 relative">
           <div className="flex-1 flex flex-col items-center justify-center p-4">
@@ -1233,8 +1575,6 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
                     setActiveTool={setActiveTool}
                     paths={paths}
                     setPaths={setPaths}
-                    undonePaths={undonePaths}
-                    setUndonePaths={setUndonePaths}
                     brushSize={brushSize}
                     brushColor={brushColor}
                     setBrushColor={setBrushColor}
@@ -1254,12 +1594,98 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
                     onPaste={handlePaste as any}
                     onSelectCanvasFrame={handleSelectCanvasFrame}
                     isSelectionInverted={isSelectionInverted}
+                    activeChannel={activeChannel}
                     canvasFrame={canvasFrame}
+                    isSimulatingPressure={isSimulatingPressure}
                     canvasBackgroundColor={canvasBackgroundColor}
                     unit={unit}
                     ppi={ppi}
                     pressureCurve={pressureCurve}
                     forceProportions={forceProportions}
+                    fillTolerance={fillTolerance}
+                    fillContiguous={fillContiguous}
+                    onCommitTransformRaster={(composite, x, y, capturedLayerIds, sel) => {
+                        // Clear all vector paths from every captured layer
+                        setPaths(prev => prev.filter(p => !capturedLayerIds.includes(p.layerId)));
+
+                        // Clear pastedImages from every captured layer
+                        setLayers(prev => {
+                            const clearImages = (lst: Layer[]): Layer[] => lst.map(l => {
+                                const result = { ...l };
+                                if (capturedLayerIds.includes(l.id)) {
+                                    result.pastedImage = [];
+                                }
+                                if (l.layers) result.layers = clearImages(l.layers);
+                                return result;
+                            });
+                            return clearImages(prev);
+                        });
+
+                        // Store the committed composite raster on the active layer
+                        setLayers(prev => {
+                            const addImage = (lst: Layer[]): Layer[] => lst.map(l => {
+                                if (l.id === activeLayerId) {
+                                    return {
+                                        ...l,
+                                        pastedImage: [
+                                            ...l.pastedImage,
+                                            { imageData: composite, x, y }
+                                        ]
+                                    };
+                                }
+                                if (l.layers) return { ...l, layers: addImage(l.layers) };
+                                return l;
+                            });
+                            return addImage(prev);
+                        });
+                    }}
+                    onPaintBucketFill={(imageData: HTMLCanvasElement, x: number, y: number) => {
+                        setLayers(prev => prev.map(l => {
+                            if (l.id === activeLayerId) {
+                                return {
+                                    ...l,
+                                    pastedImage: [...l.pastedImage, { imageData, x, y }]
+                                };
+                            }
+                            return l;
+                        }));
+                    }}
+                    onCommitCrop={(cropRect: {x: number, y: number, width: number, height: number}) => {
+                        // Translate paths
+                        setPaths(prev => prev.map(p => ({
+                            ...p,
+                            points: p.points.map(pt => ({
+                                ...pt,
+                                x: pt.x - cropRect.x,
+                                y: pt.y - cropRect.y
+                            }))
+                        })));
+                        
+                        // Translate pasted layers
+                        setLayers(prev => prev.map(l => {
+                            if (l.pastedImage && l.pastedImage.length > 0) {
+                                return {
+                                    ...l,
+                                    pastedImage: l.pastedImage.map(img => ({
+                                        ...img,
+                                        x: img.x - cropRect.x,
+                                        y: img.y - cropRect.y
+                                    }))
+                                };
+                            }
+                            return l;
+                        }));
+
+                        // Resize actual canvas window via canvasFrame
+                        setCanvasFrame({
+                            width: cropRect.width, 
+                            height: cropRect.height 
+                        });
+                        
+                        // Drop selection block and set tool back to normal
+                        setSelection(null);
+                        setActiveTool('brush');
+                    }}
                 />
             </div>
           </div>
@@ -1330,6 +1756,12 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
             onOpenChange={setIsLanguageDialogOpen}
             setLocale={setLocale}
         />
+        <HistoryLimitDialog
+            isOpen={isHistoryLimitDialogOpen}
+            onOpenChange={setIsHistoryLimitDialogOpen}
+            limit={historyLimit}
+            setLimit={setHistoryLimit}
+        />
       </div>
       <input
         type="file"
@@ -1373,6 +1805,58 @@ export function CanvasSyncEditor({ setLocale }: CanvasSyncEditorProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {showPerformance && <PerformanceMonitor pathsCount={paths.length} layersCount={layers.length} />}
+      {showConsole && <ConsolePanel logs={actionLog} />}
     </>
   );
+}
+
+function PerformanceMonitor({ pathsCount, layersCount }: { pathsCount: number, layersCount: number }) {
+    const [fps, setFps] = React.useState(0);
+    const lastTime = React.useRef(performance.now());
+    const frames = React.useRef(0);
+
+    React.useEffect(() => {
+        let animationId: number;
+        const update = () => {
+            frames.current++;
+            const now = performance.now();
+            if (now >= lastTime.current + 1000) {
+                setFps(Math.round((frames.current * 1000) / (now - lastTime.current)));
+                lastTime.current = now;
+                frames.current = 0;
+            }
+            animationId = requestAnimationFrame(update);
+        };
+        animationId = requestAnimationFrame(update);
+        return () => cancelAnimationFrame(animationId);
+    }, []);
+
+    return (
+        <div className="fixed bottom-4 right-4 bg-black/80 text-green-400 p-2 rounded-md text-xs font-mono z-50 pointer-events-none border border-green-900 shadow-lg">
+            <div>FPS: {fps}</div>
+            <div>PATHS: {pathsCount}</div>
+            <div>LAYERS: {layersCount}</div>
+        </div>
+    );
+}
+
+function ConsolePanel({ logs }: { logs: { id: number, message: string, time: string }[] }) {
+    return (
+        <div className="fixed bottom-4 left-4 w-64 h-48 bg-zinc-950/90 text-zinc-300 p-2 rounded-md text-xs font-mono z-50 border border-zinc-800 shadow-xl flex flex-col">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-1 mb-1 text-zinc-500 uppercase tracking-tighter text-[10px]">
+                <span>Console Log</span>
+                <span>Active</span>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-1">
+                {logs.length === 0 && <div className="text-zinc-600 italic">No activity recorded...</div>}
+                {logs.map(log => (
+                    <div key={log.id} className="flex gap-2 leading-tight border-b border-zinc-900/50 pb-0.5">
+                        <span className="text-zinc-500 shrink-0">[{log.time}]</span>
+                        <span className="break-all">{log.message}</span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
 }

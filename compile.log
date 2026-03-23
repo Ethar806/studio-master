@@ -1,0 +1,32 @@
+﻿src/components/canvas-sync/canvas.tsx(225,10): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"transform"' have no overlap.
+src/components/canvas-sync/canvas.tsx(240,30): error TS2339: Property 'width' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(241,30): error TS2339: Property 'height' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(260,17): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"transform"' have no overlap.
+src/components/canvas-sync/canvas.tsx(902,33): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"transform"' have no overlap.
+src/components/canvas-sync/canvas.tsx(923,31): error TS2339: Property 'width' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(924,31): error TS2339: Property 'height' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(928,25): error TS2339: Property 'rotation' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(928,54): error TS2339: Property 'rotation' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(967,31): error TS2339: Property 'width' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(968,31): error TS2339: Property 'height' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(972,25): error TS2339: Property 'rotation' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(972,53): error TS2339: Property 'rotation' does not exist on type '{ imageData: HTMLCanvasElement; x: number; y: number; }'.
+src/components/canvas-sync/canvas.tsx(1034,9): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"transform"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1040,9): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"crop"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1466,16): error TS2367: This comparison appears to be unintentional because the types '"pan" | "ai-object-remove" | "pipette" | "ruler" | "gradient" | "upload" | "redo"' and '"fill"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1472,16): error TS2367: This comparison appears to be unintentional because the types '"pan" | "ai-object-remove" | "gradient" | "upload" | "redo"' and '"crop"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1501,16): error TS2367: This comparison appears to be unintentional because the types '"pan" | "ai-object-remove" | "gradient" | "upload" | "redo"' and '"transform"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1559,29): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"transform"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1597,29): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"crop"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1636,22): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"transform"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1640,22): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"crop"' have no overlap.
+src/components/canvas-sync/canvas.tsx(1699,11): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"crop"' have no overlap.
+src/components/canvas-sync/main-editor.tsx(1164,11): error TS2322: Type '{ onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onNew: () => void; onOpen: () => void; onSave: () => void; onSaveAs: () => void; onExport: () => void; onImport: () => void; onClear: () => void; ... 51 more ...; toggleLeftHanded: () => void; }' is not assignable to type 'IntrinsicAttributes & EditorHeaderProps'.
+  Property 'onOpenCanvasSizeDialog' does not exist on type 'IntrinsicAttributes & EditorHeaderProps'.
+src/components/canvas-sync/main-editor.tsx(1188,10): error TS2739: Type '{ activeTool: Tool; setActiveTool: (tool: Tool) => void; brushSize: number; setBrushSize: Dispatch<SetStateAction<number>>; brushColor: string; ... 31 more ...; leftHanded: boolean; }' is missing the following properties from type 'QuickAccessToolbarProps': fillTolerance, setFillTolerance, fillContiguous, setFillContiguous
+src/components/canvas-sync/main-editor.tsx(1236,21): error TS2322: Type '{ ref: RefObject<CanvasRef>; activeTool: Tool; setActiveTool: Dispatch<SetStateAction<Tool>>; paths: Path[]; setPaths: Dispatch<...>; ... 26 more ...; forceProportions: boolean; }' is not assignable to type 'IntrinsicAttributes & CanvasProps & RefAttributes<CanvasRef>'.
+  Property 'undonePaths' does not exist on type 'IntrinsicAttributes & CanvasProps & RefAttributes<CanvasRef>'.
+src/components/canvas-sync/quick-access-toolbar.tsx(141,7): error TS2322: Type '"crop"' is not assignable to type 'Tool'.
+src/components/canvas-sync/quick-access-toolbar.tsx(142,7): error TS2322: Type '"transform"' is not assignable to type 'Tool'.
+src/components/canvas-sync/quick-access-toolbar.tsx(145,7): error TS2322: Type '"fill"' is not assignable to type 'Tool'.
+src/components/canvas-sync/quick-access-toolbar.tsx(277,18): error TS2367: This comparison appears to be unintentional because the types 'Tool' and '"fill"' have no overlap.
